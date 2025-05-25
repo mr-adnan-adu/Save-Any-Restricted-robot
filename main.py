@@ -29,7 +29,7 @@ async def fetch_and_send(chat_id, msg_id, message):
         msg = await userbot.get_messages(chat_id, msg_id)
         
         if not msg:
-            await message.reply(f"⚠ Message {msg_id} not found or deleted.")
+            await message.reply(f"⚠️ Message {msg_id} not found or deleted.")
             return
             
         if msg.text or msg.caption:
@@ -47,7 +47,7 @@ async def fetch_and_send(chat_id, msg_id, message):
         elif msg.sticker:
             await message.reply_sticker(msg.sticker.file_id)
         else:
-            await message.reply("⚠ Unsupported message type.")
+            await message.reply("⚠️ Unsupported message type.")
             
         # Add small delay to prevent flood
         await asyncio.sleep(1)
@@ -81,7 +81,7 @@ async def handle_private_link(_, message: Message):
             
             # Limit range to prevent abuse
             if end_id - start_id > 50:
-                await message.reply("⚠ Range too large. Maximum 50 messages at once.")
+                await message.reply("⚠️ Range too large. Maximum 50 messages at once.")
                 return
                 
             await message.reply(f"📥 Fetching messages {start_id} to {end_id}...")
@@ -92,7 +92,7 @@ async def handle_private_link(_, message: Message):
             await fetch_and_send(chat_id, int(msg_id_part), message)
             
     except Exception as e:
-        await message.reply(f"⚠ Error parsing link: {e}")
+        await message.reply(f"⚠️ Error parsing link: {e}")
 
 @bot.on_message(filters.private & filters.regex(r'https://t\.me/\+'))
 async def handle_invite(_, message: Message):
@@ -120,40 +120,40 @@ async def handle_invite(_, message: Message):
 @bot.on_message(filters.private & filters.command("start"))
 async def start_command(_, message: Message):
     welcome_text = """
-🤖 *Restricted Content Saver Bot*
+🤖 **Restricted Content Saver Bot**
 
-*Features:*
+**Features:**
 • Save messages from private/restricted channels
 • Join channels via invite links
 • Download media files
 
-*Usage:*
-1. Send a private channel link: https://t.me/c/123456789/1
-2. Send invite link to join: https://t.me/+abcd1234
-3. For message ranges: https://t.me/c/123456789/1-10
+**Usage:**
+1. Send a private channel link: `https://t.me/c/123456789/1`
+2. Send invite link to join: `https://t.me/+abcd1234`
+3. For message ranges: `https://t.me/c/123456789/1-10`
 
-*Note:* Bot needs to be in the channel to access messages.
+**Note:** Bot needs to be in the channel to access messages.
     """
     await message.reply(welcome_text)
 
 @bot.on_message(filters.private & filters.command("help"))
 async def help_command(_, message: Message):
     help_text = """
-📚 *Help & Commands*
+📚 **Help & Commands**
 
-*Supported Links:*
-• https://t.me/c/1234567890/123 - Single message
-• https://t.me/c/1234567890/123-130 - Message range (max 50)
-• https://t.me/+abcd1234 - Invite link to join
+**Supported Links:**
+• `https://t.me/c/1234567890/123` - Single message
+• `https://t.me/c/1234567890/123-130` - Message range (max 50)
+• `https://t.me/+abcd1234` - Invite link to join
 
-*Supported Media:*
+**Supported Media:**
 • Text messages
 • Photos & Videos
 • Documents & Files
 • Audio & Voice messages
 • Stickers
 
-*Rate Limits:*
+**Rate Limits:**
 • 1 request per 5 seconds per user
 • Maximum 50 messages per range request
     """
@@ -178,5 +178,5 @@ async def main():
         await userbot.stop()
         print("[INFO] Bot and Userbot stopped.")
 
-if _name_ == "_main_":
+if __name__ == "__main__":
     asyncio.run(main())
