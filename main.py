@@ -6,18 +6,22 @@ from pyrogram.types import Message
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-USERBOT_SESSION_STRING = os.getenv("USERBOT_SESSION_STRING")
+USERBOT_SESSION_STRING = os.getenv("USERBOT_SESSION_STRING")  # Pyrogram session string here
 
-# Initialize the userbot with the session string
+# Userbot with session string as first argument
 userbot = Client(
-    session_string=USERBOT_SESSION_STRING,
+    USERBOT_SESSION_STRING,
     api_id=API_ID,
     api_hash=API_HASH
 )
 
-# Initialize the bot
-bot = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-
+# Bot client with bot token and session file name "bot"
+bot = Client(
+    "bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
+)
 
 @bot.on_message(filters.private & filters.regex(r'https://t\.me/\+'))
 async def join_private_channel(_, message: Message):
@@ -27,7 +31,6 @@ async def join_private_channel(_, message: Message):
         await message.reply("✅ Joined the private channel successfully.")
     except Exception as e:
         await message.reply(f"❌ Failed to join: {e}")
-
 
 @bot.on_message(filters.private & filters.regex(r'https://t\.me/c/\d+/\d+(-\d+)?'))
 async def get_message(_, message: Message):
@@ -43,7 +46,6 @@ async def get_message(_, message: Message):
     else:
         await fetch_and_send(chat_id, int(msg_id_part), message)
 
-
 async def fetch_and_send(chat_id, msg_id, reply_to):
     try:
         msg = await userbot.get_messages(chat_id, msg_id)
@@ -57,11 +59,11 @@ async def fetch_and_send(chat_id, msg_id, reply_to):
     except Exception as e:
         await bot.send_message(reply_to.chat.id, f"❌ Error: {e}")
 
-
 async def main():
     await userbot.start()
     await bot.start()
     print("✅ Bot and Userbot started.")
-    await asyncio.get_event_loop().create_future()
+    await asyncio.get_event_loop().create_future()  # run forever
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
