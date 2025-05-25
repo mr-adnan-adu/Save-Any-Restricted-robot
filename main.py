@@ -58,16 +58,14 @@ async def handle_invite(_, message: Message):
     except Exception as e:
         await message.reply(f"❌ Failed to join: {e}")
 
-from pyrogram.idle import idle  # Now this will work after upgrade
-
 async def main():
     await bot.start()
     await userbot.start()
     print("Bot and Userbot Started.")
-    await idle()
+    # Keep running forever
+    await asyncio.Event().wait()
     await bot.stop()
     await userbot.stop()
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())
