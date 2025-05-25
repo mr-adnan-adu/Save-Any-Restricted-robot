@@ -3,12 +3,10 @@ name: Deploy Enhanced Telegram Bot
 on:
   push:
     branches:
-      - main
-      - master
+      - "1"
   pull_request:
     branches:
-      - main
-      - master
+      - "1"
   workflow_dispatch:
     inputs:
       timeout_minutes:
