@@ -1,6 +1,3 @@
-
-
-````markdown
 # Save Any Restricted Robot 🤖
 
 This Telegram bot automatically downloads and sends media or files from both public and private channel posts, even restricted content.
@@ -34,7 +31,7 @@ Click below to deploy your own version instantly on Render:
 ```bash
 git clone https://github.com/mr-adnan-adu/Save-Any-Restricted-robot.git
 cd Save-Any-Restricted-robot
-````
+
 
 ### 2. Install Dependencies
 
