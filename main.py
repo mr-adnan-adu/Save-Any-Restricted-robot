@@ -6,16 +6,15 @@ from pyrogram.types import Message
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-USERBOT_SESSION_STRING = os.getenv("USERBOT_SESSION_STRING")  # Pyrogram session string here
+USERBOT_SESSION_STRING = os.getenv("USERBOT_SESSION_STRING")
 
-# Userbot with session string as first argument
 userbot = Client(
-    USERBOT_SESSION_STRING,
+    "userbot",
     api_id=API_ID,
-    api_hash=API_HASH
+    api_hash=API_HASH,
+    session_string=USERBOT_SESSION_STRING
 )
 
-# Bot client with bot token and session file name "bot"
 bot = Client(
     "bot",
     api_id=API_ID,
@@ -63,7 +62,7 @@ async def main():
     await userbot.start()
     await bot.start()
     print("✅ Bot and Userbot started.")
-    await asyncio.get_event_loop().create_future()  # run forever
+    await asyncio.get_event_loop().create_future()
 
 if __name__ == "__main__":
     asyncio.run(main())
