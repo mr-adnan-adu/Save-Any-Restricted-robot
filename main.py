@@ -8,7 +8,6 @@ API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 SESSION_STRING = os.environ.get("USERBOT_SESSION_STRING")
 
-# Start bot and userbot
 bot = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 userbot = Client("userbot", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING)
 
@@ -26,7 +25,6 @@ async def fetch_and_send(chat_id, msg_id, message):
     except Exception as e:
         await message.reply(f"❌ Error fetching message ID {msg_id}: {e}")
 
-# Handle t.me/c/ links (message in private groups/channels)
 @bot.on_message(filters.private & filters.regex(r'https://t\.me/c/\d+/\d+(-\d+)?'))
 async def handle_private_link(_, message: Message):
     try:
@@ -35,7 +33,6 @@ async def handle_private_link(_, message: Message):
         chat_id = int("-100" + parts[4])
         msg_id_part = parts[5]
 
-        # Ensure peer is loaded
         try:
             await userbot.get_chat(chat_id)
         except Exception as e:
@@ -52,7 +49,6 @@ async def handle_private_link(_, message: Message):
     except Exception as e:
         await message.reply(f"⚠️ Error parsing link: {e}")
 
-# Handle invite links
 @bot.on_message(filters.private & filters.regex(r'https://t\.me/\+'))
 async def handle_invite(_, message: Message):
     invite_link = message.text.strip()
@@ -61,6 +57,8 @@ async def handle_invite(_, message: Message):
         await message.reply(f"✅ Successfully joined: {chat.title}")
     except Exception as e:
         await message.reply(f"❌ Failed to join: {e}")
+
+from pyrogram.idle import idle  # Now this will work after upgrade
 
 async def main():
     await bot.start()
@@ -71,5 +69,5 @@ async def main():
     await userbot.stop()
 
 if __name__ == "__main__":
-    from pyrogram.idle import idle
+    import asyncio
     asyncio.run(main())
