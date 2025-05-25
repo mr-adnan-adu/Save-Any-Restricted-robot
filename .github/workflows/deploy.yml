@@ -25,7 +25,7 @@ jobs:
       run: pip install -r requirements.txt
 
     - name: Run the bot
-      run: python main.py
+      run: python bot.py
       env:
         API_ID: ${{ secrets.API_ID }}
         API_HASH: ${{ secrets.API_HASH }}
