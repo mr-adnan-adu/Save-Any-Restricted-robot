@@ -2,18 +2,20 @@ import os
 import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from dotenv import load_dotenv
-
-# Load .env file
-load_dotenv()
 
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 USERBOT_SESSION_STRING = os.getenv("USERBOT_SESSION_STRING")
 
-# Correct way to initialize userbot with session string
-userbot = Client(USERBOT_SESSION_STRING, api_id=API_ID, api_hash=API_HASH)
+# Initialize the userbot with the session string
+userbot = Client(
+    session_string=USERBOT_SESSION_STRING,
+    api_id=API_ID,
+    api_hash=API_HASH
+)
+
+# Initialize the bot
 bot = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 
