@@ -1,0 +1,19 @@
+name: save-restricted-bot
+
+services:
+  - name: telegram-bot
+    git:
+      repository: https://github.com/mr-adnan-adu/Save-Any-Restricted-robot
+      branch: main
+    build_command: pip install -r requirements.txt
+    run_command: python bot.py
+    env:
+      - name: API_ID
+        value: YOUR_API_ID
+      - name: API_HASH
+        value: YOUR_API_HASH
+      - name: BOT_TOKEN
+        value: YOUR_BOT_TOKEN
+    instance_type: micro
+    regions:
+      - cdg
