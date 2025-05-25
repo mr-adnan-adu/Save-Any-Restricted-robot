@@ -1,67 +1,59 @@
 import os
+import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
-API_ID = int(os.environ.get("API_ID"))
-API_HASH = os.environ.get("API_HASH")
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-bot = Client("save_restricted_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+userbot = Client("userbot", api_id=API_ID, api_hash=API_HASH)
+bot = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-channel_invites = {}  # In-memory cache for invite links
 
-HELP_TEXT = """
-**Help:**
+@bot.on_message(filters.private & filters.regex(r'https://t\.me/\+'))
+async def join_private_channel(_, message: Message):
+    invite_link = message.text.strip()
+    try:
+        await userbot.join_chat(invite_link)
+        await message.reply("✅ Joined the private channel successfully.")
+    except Exception as e:
+        await message.reply(f"❌ Failed to join: {e}")
 
-1. Send me any post link like `https://t.me/c/...`
-2. If it's from a **private channel**, first send the **invite link**
-3. I will automatically download and send the content.
 
-• I support Files 📁 and Messages!
-"""
+@bot.on_message(filters.private & filters.regex(r'https://t\.me/c/\d+/\d+(-\d+)?'))
+async def get_message(_, message: Message):
+    link = message.text.strip()
+    parts = link.split("/")
+    chat_id = int("-100" + parts[4])
+    msg_id_part = parts[5]
 
-@bot.on_message(filters.command(["start", "help"]))
-async def help_handler(client, message: Message):
-    await message.reply_text(HELP_TEXT)
+    if "-" in msg_id_part:
+        start_id, end_id = map(int, msg_id_part.split("-"))
+        for msg_id in range(start_id, end_id + 1):
+            await fetch_and_send(chat_id, msg_id, message)
+    else:
+        await fetch_and_send(chat_id, int(msg_id_part), message)
 
-@bot.on_message(filters.private & filters.text)
-async def handle_text(client, message: Message):
-    text = message.text.strip()
 
-    if "t.me/joinchat/" in text or "t.me/+" in text:
-        try:
-            chat = await client.join_chat(text)
-            channel_invites[str(chat.id)] = text
-            await message.reply_text(f"✅ Joined: **{chat.title}**.\nNow send the post link.")
-        except Exception as e:
-            return await message.reply_text(f"❌ Failed to join: {e}")
-        return
+async def fetch_and_send(chat_id, msg_id, reply_to):
+    try:
+        msg = await userbot.get_messages(chat_id, msg_id)
+        if msg.media:
+            downloaded = await msg.download()
+            await bot.send_document(chat_id=reply_to.chat.id, document=downloaded)
+        elif msg.text:
+            await bot.send_message(reply_to.chat.id, msg.text)
+        else:
+            await bot.send_message(reply_to.chat.id, "ℹ️ Message has no text or media.")
+    except Exception as e:
+        await bot.send_message(reply_to.chat.id, f"❌ Error: {e}")
 
-    if text.startswith("https://t.me/c/"):
-        try:
-            parts = text.split("/")
-            chat_id = int("-100" + parts[4])
-            msg_id = int(parts[5])
 
-            try:
-                msg = await client.get_messages(chat_id, msg_id)
-            except:
-                invite = channel_invites.get(str(chat_id))
-                if invite:
-                    await client.join_chat(invite)
-                    msg = await client.get_messages(chat_id, msg_id)
-                else:
-                    return await message.reply_text("🔒 Private channel detected.\nPlease send the invite link first.")
+async def main():
+    await userbot.start()
+    await bot.start()
+    print("✅ Bot and Userbot started.")
+    await asyncio.get_event_loop().create_future()
 
-            if msg.media:
-                await message.reply_text("📥 Downloading content...")
-                await msg.copy(message.chat.id)
-            else:
-                await message.reply_text(msg.text or "📄 This post has no media.")
-        except Exception as e:
-            await message.reply_text(f"⚠️ Error: {e}")
-        return
-
-    await message.reply_text("❓ Please send a valid post or invite link.")
-
-bot.run()
+asyncio.run(main())
