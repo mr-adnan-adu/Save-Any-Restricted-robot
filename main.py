@@ -11,7 +11,7 @@ API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 USERBOT_SESSION_STRING = os.getenv("USERBOT_SESSION_STRING")
 
-userbot = Client(session_name=USERBOT_SESSION_STRING, api_id=API_ID, api_hash=API_HASH)
+userbot = Client(USERBOT_SESSION_STRING, api_id=API_ID, api_hash=API_HASH)
 bot = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 @bot.on_message(filters.private & filters.regex(r'https://t\.me/\+'))
