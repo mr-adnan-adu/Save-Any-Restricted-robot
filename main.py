@@ -1,6 +1,6 @@
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message
-from pyrogram.handlers import MessageHandler  # Removed ErrorHandler
+from pyrogram.handlers import MessageHandler
 from pyrogram.errors import FloodWait, ChatAdminRequired, UserNotParticipant, ChannelPrivate, PeerIdInvalid
 import asyncio
 import os
@@ -41,7 +41,8 @@ def load_config() -> Dict[str, Any]:
         'RATE_LIMIT': int(os.environ.get("RATE_LIMIT_SECONDS", "3")),
         'ADMIN_RATE_LIMIT': int(os.environ.get("ADMIN_RATE_LIMIT", "1")),
         'MAX_FILE_SIZE': int(os.environ.get("MAX_FILE_SIZE_MB", "50")) * 1024 * 1024,  # Convert MB to bytes
-        'AUTHORIZED_USERS': os.environ.get("AUTHORIZED_USERS", "").split(',') if os.environ.get("AUTHORIZED_USERS") else []
+        'AUTHORIZED_USERS': os.environ.get("AUTHORIZED_USERS", "").split(',') if os.environ.get("AUTHORIZED_USERS") else [],
+        'PORT': int(os.environ.get("PORT", 10000))  # Default to 10000 for Render
     }
     
     # Validate required fields
@@ -72,6 +73,7 @@ def load_config() -> Dict[str, Any]:
     logger.info(f"MAX_MESSAGES: {config['MAX_MESSAGES']}")
     logger.info(f"RATE_LIMIT: {config['RATE_LIMIT']} seconds")
     logger.info(f"AUTHORIZED_USERS: {len(config['AUTHORIZED_USERS'])} users")
+    logger.info(f"PORT: {config['PORT']}")
     
     return config
 
@@ -700,12 +702,30 @@ async def ignore_non_private(_, message: Message):
     if message.chat.type != "private":
         return
 
-# Run the bot
+# HTTP server for Render health check
+async def health_check(request):
+    """Health check endpoint for Render"""
+    return web.Response(text="OK", status=200)
+
+async def start_http_server():
+    """Start a minimal HTTP server for Render"""
+    app = web.Application()
+    app.add_routes([web.get('/health', health_check)])
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', CONFIG['PORT'])
+    await site.start()
+    logger.info(f"✅ HTTP server started on port {CONFIG['PORT']}")
+
+# Run the bot and HTTP server
 async def main():
     """Main function"""
     logger.info("🚀 Starting Enhanced Content Fetcher Bot...")
     
     try:
+        # Start HTTP server for Render
+        await start_http_server()
+        
         # Start both clients
         await bot.start()
         await userbot.start()
