@@ -1,5 +1,6 @@
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message
+from pyrogram.handlers import MessageHandler, ErrorHandler
 from pyrogram.errors import FloodWait, ChatAdminRequired, UserNotParticipant, ChannelPrivate, PeerIdInvalid
 import asyncio
 import os
@@ -97,15 +98,15 @@ userbot = Client(
 )
 
 # Enhanced error handlers
-async def bot_error_handler(_, update, error):
-    logger.error(f"Bot update error: {error}", exc_info=True)
+async def bot_error_handler(client, update, error):
+    logger.error(f"Bot error: {error}", exc_info=True)
 
-async def userbot_error_handler(_, update, error):
-    logger.error(f"Userbot update error: {error}", exc_info=True)
+async def userbot_error_handler(client, update, error):
+    logger.error(f"Userbot error: {error}", exc_info=True)
 
-# Add handlers to clients
-bot.add_error_handler(bot_error_handler)
-userbot.add_error_handler(userbot_error_handler)
+# Register error handlers
+bot.add_handler(ErrorHandler(bot_error_handler))
+userbot.add_handler(ErrorHandler(userbot_error_handler))
 
 # Enhanced rate limiting with user statistics
 user_stats = {}
