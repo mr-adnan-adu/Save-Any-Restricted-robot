@@ -87,7 +87,6 @@ bot = Client(
     api_id=CONFIG['API_ID'],
     api_hash=CONFIG['API_HASH'],
     bot_token=CONFIG['BOT_TOKEN'],
-    allowed_updates=["message", "edited_message"]  # Only process relevant updates
 )
 
 userbot = Client(
