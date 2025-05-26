@@ -83,18 +83,28 @@ except Exception as e:
 
 # Initialize clients
 bot = Client(
-    "content_bot", 
-    api_id=CONFIG['API_ID'], 
-    api_hash=CONFIG['API_HASH'], 
-    bot_token=CONFIG['BOT_TOKEN']
+    "content_bot",
+    api_id=CONFIG['API_ID'],
+    api_hash=CONFIG['API_HASH'],
+    bot_token=CONFIG['BOT_TOKEN'],
+    allowed_updates=["message", "edited_message"]  # Only process relevant updates
 )
 
 userbot = Client(
-    "content_userbot", 
-    api_id=CONFIG['API_ID'], 
-    api_hash=CONFIG['API_HASH'], 
+    "content_userbot",
+    api_id=CONFIG['API_ID'],
+    api_hash=CONFIG['API_HASH'],
     session_string=CONFIG['SESSION_STRING']
 )
+
+# Enhanced error handlers
+@bot.on_error()
+async def bot_error_handler(_, update, error):
+    logger.error(f"Bot update error: {error}", exc_info=True)
+
+@userbot.on_error()
+async def userbot_error_handler(_, update, error):
+    logger.error(f"Userbot update error: {error}", exc_info=True)
 
 # Enhanced rate limiting with user statistics
 user_stats = {}
@@ -154,6 +164,7 @@ def parse_telegram_link(link: str) -> Optional[Dict[str, Any]]:
     # Patterns for different link formats
     private_link_pattern = r'https://t\.me/c/(\d+)/(\d+)(?:-(\d+))?'
     public_link_pattern = r'https://t\.me/([^/]+)/(\d+)(?:-(\d+))?'
+    invite_link_pattern = r'https://t\.me/\+(\w+)'
     
     # Try private link first
     match = re.match(private_link_pattern, link)
@@ -184,6 +195,14 @@ def parse_telegram_link(link: str) -> Optional[Dict[str, Any]]:
             'start_msg': start_msg,
             'end_msg': end_msg,
             'is_range': end_msg is not None
+        }
+    
+    # Try invite link
+    match = re.match(invite_link_pattern, link)
+    if match:
+        return {
+            'type': 'invite',
+            'hash': match.group(1)
         }
     
     return None
@@ -219,6 +238,12 @@ async def resolve_chat_with_cache(client: Client, chat_id) -> Any:
                 return chat_info
         
         raise PeerIdInvalid(f"Cannot resolve peer {chat_id}")
+    except ChannelPrivate:
+        raise ChannelPrivate("Userbot not in channel. Use /preload with invite link.")
+    except Exception as e:
+        logger.error(f"Chat resolution error: {e}")
+        chat_cache.pop(cache_key, None)  # Invalidate cache entry
+        raise
 
 async def fetch_and_send_message(chat_id, msg_id: int, message: Message, reply_to_msg_id: Optional[int] = None) -> bool:
     """Enhanced message fetching with better error handling"""
@@ -230,10 +255,10 @@ async def fetch_and_send_message(chat_id, msg_id: int, message: Message, reply_t
             chat_info = await resolve_chat_with_cache(userbot, chat_id)
             logger.info(f"Chat resolved: {chat_info.title} (ID: {chat_info.id})")
         except ChannelPrivate:
-            await message.reply("❌ Private channel - userbot needs access", reply_to_message_id=reply_to_msg_id)
+            await message.reply("❌ Private channel - userbot needs access. Use /preload with invite link.", reply_to_message_id=reply_to_msg_id)
             return False
         except UserNotParticipant:
-            await message.reply("❌ Userbot not a member of this channel", reply_to_message_id=reply_to_msg_id)
+            await message.reply("❌ Userbot not a member of this channel. Use /preload to join.", reply_to_message_id=reply_to_msg_id)
             return False
         except PeerIdInvalid:
             await message.reply(f"❌ Cannot access chat. Try `/preload {chat_id}`", reply_to_message_id=reply_to_msg_id)
@@ -316,7 +341,6 @@ async def fetch_and_send_message(chat_id, msg_id: int, message: Message, reply_t
         await message.reply(f"❌ Error: {error_msg}", reply_to_message_id=reply_to_msg_id)
         return False
 
-# Message handlers
 @bot.on_message(filters.private & (filters.regex(r'https://t\.me/c/\d+/\d+') | filters.regex(r'https://t\.me/[^/]+/\d+')))
 async def handle_message_link(_, message: Message):
     """Handle both private and public channel links"""
@@ -337,6 +361,10 @@ async def handle_message_link(_, message: Message):
         if not parsed:
             await message.reply("❌ Invalid Telegram link format")
             update_user_stats(user_id, success=False)
+            return
+        
+        if parsed['type'] == 'invite':
+            await message.reply("⚠️ Please use /preload command with invite links")
             return
         
         chat_id = parsed['chat_id']
@@ -542,6 +570,7 @@ async def help_command(_, message: Message):
 • Single: `t.me/c/1234567890/456`
 • Range: `t.me/c/1234567890/456-460`
 • Public: `t.me/channel_name/456`
+• Invite: `t.me/+invitecode`
 
 **📋 Supported Content:**
 ✅ Text messages
@@ -557,7 +586,8 @@ async def help_command(_, message: Message):
 • Some content may be restricted
 
 **🔧 Commands:**
-• `/preload <chat_id>` - Fix access issues
+• `/preload <chat_id_or_link>` - Fix access issues
+   Example: `/preload https://t.me/+invitecode`
 • `/stats` - Your usage statistics
 • `/test` - Check system status
 
@@ -578,7 +608,7 @@ Need help? Contact support! 📞
 
 @bot.on_message(filters.private & filters.command("preload"))
 async def preload_command(_, message: Message):
-    """Preload chat command"""
+    """Preload chat command with invite link support"""
     user_id = message.from_user.id
     
     is_limited, wait_time = is_rate_limited(user_id)
@@ -589,29 +619,42 @@ async def preload_command(_, message: Message):
     try:
         args = message.text.split()
         if len(args) != 2:
-            await message.reply("❌ Usage: `/preload <chat_id>`\nExample: `/preload -1001234567890`")
+            await message.reply("❌ Usage: `/preload <chat_id_or_link>`\nExample: `/preload -1001234567890`")
             return
         
         chat_input = args[1]
+        status_msg = await message.reply(f"🔄 Preloading: {chat_input}...")
         
-        if chat_input.startswith('https://t.me/'):
-            parsed = parse_telegram_link(chat_input)
-            if not parsed:
-                await message.reply("❌ Invalid link format")
-                return
-            chat_id = parsed['chat_id']
-        else:
+        # Handle invite links directly
+        if chat_input.startswith('https://t.me/+'):
             try:
-                chat_id = int(chat_input)
-            except ValueError:
-                chat_id = chat_input
+                chat = await userbot.join_chat(chat_input)
+                chat_id = chat.id
+                await status_msg.edit_text(f"✅ Joined: **{chat.title}**\nID: `{chat.id}`")
+                update_user_stats(user_id, success=True)
+                return
+            except FloodWait as e:
+                await status_msg.edit_text(f"⏳ Please wait {e.value} seconds before trying again.")
+                return
         
-        status_msg = await message.reply(f"🔄 Preloading: {chat_id}...")
-        
+        # Existing resolution logic
         try:
+            if chat_input.startswith('https://t.me/'):
+                parsed = parse_telegram_link(chat_input)
+                if not parsed:
+                    await status_msg.edit_text("❌ Invalid link format")
+                    return
+                chat_id = parsed['chat_id']
+            else:
+                try:
+                    chat_id = int(chat_input)
+                except ValueError:
+                    chat_id = chat_input
+            
             chat_info = await resolve_chat_with_cache(userbot, chat_id)
             await status_msg.edit_text(f"✅ Preloaded: **{chat_info.title}**\nID: `{chat_info.id}`")
             update_user_stats(user_id, success=True)
+            
         except Exception as e:
             await status_msg.edit_text(f"❌ Failed: {str(e)[:50]}")
             update_user_stats(user_id, success=False)
@@ -650,6 +693,12 @@ async def admin_command(_, message: Message):
 /userstats - Detailed user stats
     """
     await message.reply(admin_text)
+
+# Ignore non-private messages
+@bot.on_message()
+async def ignore_non_private(_, message: Message):
+    if message.chat.type != "private":
+        return
 
 # Run the bot
 async def main():
