@@ -1,4 +1,5 @@
-from pyrogram import Client, filters
+import asyncio
+from pyrogram import Client, filters, idle
 from pyrogram.types import Message
 from pyrogram.errors import FloodWait
 import os
@@ -83,7 +84,9 @@ async def main():
     await bot.start()
     await userbot.start()
     logger.info("Bot started!")
-    await idle()
+    await idle()  # This keeps the bot running
+    await bot.stop()
+    await userbot.stop()
 
 if __name__ == "__main__":
     asyncio.run(main())
