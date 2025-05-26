@@ -26,7 +26,7 @@ def load_config():
         'API_ID': os.environ.get("API_ID"),
         'API_HASH': os.environ.get("API_HASH"),
         'BOT_TOKEN': os.environ.get("BOT_TOKEN"),
-        'SESSION_STRING': os.environ.get("USERBOT_SESSION_STRING"),
+        'SESSION_STRING': os.environ.get("USERBOT_SESSION_STRING"),  # Fixed: This should match the workflow
         'OWNER_ID': os.environ.get("OWNER_ID"),  # Optional: Bot owner for admin commands
         'MAX_MESSAGES': int(os.environ.get("MAX_MESSAGES", "20")),  # Max messages per request
         'RATE_LIMIT': int(os.environ.get("RATE_LIMIT_SECONDS", "3"))  # Rate limit in seconds
@@ -38,6 +38,9 @@ def load_config():
     
     if missing_fields:
         logger.error(f"Missing required environment variables: {missing_fields}")
+        # Also show what environment variables are actually available (for debugging)
+        available_vars = [key for key in os.environ.keys() if any(term in key.upper() for term in ['API', 'BOT', 'SESSION', 'TOKEN', 'HASH'])]
+        logger.info(f"Available environment variables: {available_vars}")
         raise ValueError(f"Missing required environment variables: {missing_fields}")
     
     try:
