@@ -1,5 +1,5 @@
 from pyrogram import Client, filters, idle
-from pyrogram.types import Message
+from pyrogram.types import Message, Update
 from pyrogram.handlers import MessageHandler
 from pyrogram.errors import FloodWait, ChatAdminRequired, UserNotParticipant, ChannelPrivate, PeerIdInvalid
 import asyncio
@@ -702,15 +702,37 @@ async def ignore_non_private(_, message: Message):
     if message.chat.type != "private":
         return
 
+# Custom update handler to catch PeerIdInvalid errors
+async def handle_raw_update(client: Client, update: Update, users: Dict, chats: Dict):
+    """Handle raw updates to catch invalid peer errors"""
+    try:
+        # Let Pyrogram process the update
+        pass
+    except PeerIdInvalid as e:
+        logger.warning(f"Invalid peer ID in update: {e}", exc_info=True)
+        if isinstance(update, dict) and 'channel_id' in update:
+            channel_id = update.get('channel_id')
+            logger.info(f"Use /preload {channel_id} to join the channel")
+    except Exception as e:
+        logger.error(f"Error processing update: {e}", exc_info=True)
+
 # HTTP server for Render health check
 async def health_check(request):
     """Health check endpoint for Render"""
     return web.Response(text="OK", status=200)
 
+async def root_endpoint(request):
+    """Root endpoint to handle Render's default requests"""
+    return web.Response(text="Bot is running", status=200)
+
 async def start_http_server():
     """Start a minimal HTTP server for Render"""
     app = web.Application()
-    app.add_routes([web.get('/health', health_check)])
+    app.add_routes([
+        web.get('/health', health_check),
+        web.get('/', root_endpoint),
+        web.head('/', root_endpoint)
+    ])
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', CONFIG['PORT'])
@@ -725,6 +747,9 @@ async def main():
     try:
         # Start HTTP server for Render
         await start_http_server()
+        
+        # Register raw update handler
+        userbot.on_raw_update()(handle_raw_update)
         
         # Start both clients
         await bot.start()
