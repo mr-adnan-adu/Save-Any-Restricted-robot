@@ -97,13 +97,15 @@ userbot = Client(
 )
 
 # Enhanced error handlers
-@bot.on_error()
 async def bot_error_handler(_, update, error):
     logger.error(f"Bot update error: {error}", exc_info=True)
 
-@userbot.on_error()
 async def userbot_error_handler(_, update, error):
     logger.error(f"Userbot update error: {error}", exc_info=True)
+
+# Add handlers to clients
+bot.add_error_handler(bot_error_handler)
+userbot.add_error_handler(userbot_error_handler)
 
 # Enhanced rate limiting with user statistics
 user_stats = {}
