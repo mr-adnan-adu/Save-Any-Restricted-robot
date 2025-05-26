@@ -1,14 +1,4 @@
-# Core Telegram library
-pyrogram>=2.0.106
-
-# HTTP server for potential webhook support
-aiohttp>=3.8.5
-
-# Telegram session management
-TgCrypto>=1.2.5
-
-# Additional utilities that might be useful
-python-dotenv>=1.0.0
-
-# For better async performance
-uvloop>=0.17.0; sys_platform != "win32"
+pyrogram==2.0.106
+aiohttp==3.9.3
+TgCrypto==1.2.3
+python-dotenv==1.0.1
