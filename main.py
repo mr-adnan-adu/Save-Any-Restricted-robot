@@ -1,6 +1,6 @@
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message
-from pyrogram.handlers import MessageHandler, ErrorHandler
+from pyrogram.handlers import MessageHandler  # Removed ErrorHandler
 from pyrogram.errors import FloodWait, ChatAdminRequired, UserNotParticipant, ChannelPrivate, PeerIdInvalid
 import asyncio
 import os
@@ -97,17 +97,6 @@ userbot = Client(
     session_string=CONFIG['SESSION_STRING']
 )
 
-# Enhanced error handlers
-async def bot_error_handler(client, update, error):
-    logger.error(f"Bot error: {error}", exc_info=True)
-
-async def userbot_error_handler(client, update, error):
-    logger.error(f"Userbot error: {error}", exc_info=True)
-
-# Register error handlers
-bot.add_handler(ErrorHandler(bot_error_handler))
-userbot.add_handler(ErrorHandler(userbot_error_handler))
-
 # Enhanced rate limiting with user statistics
 user_stats = {}
 user_last_request = {}
@@ -156,7 +145,7 @@ def is_owner_or_authorized(user_id: int) -> bool:
 async def handle_flood_wait(e: FloodWait) -> None:
     """Handle Telegram flood wait errors"""
     wait_time = e.value if hasattr(e, 'value') else 60
-    logger.warning(f"Flood wait: {wait_time} seconds")
+    logger.warning(f"Flood wait: {wait_time} seconds", exc_info=True)
     await asyncio.sleep(wait_time)
 
 def parse_telegram_link(link: str) -> Optional[Dict[str, Any]]:
@@ -243,7 +232,7 @@ async def resolve_chat_with_cache(client: Client, chat_id) -> Any:
     except ChannelPrivate:
         raise ChannelPrivate("Userbot not in channel. Use /preload with invite link.")
     except Exception as e:
-        logger.error(f"Chat resolution error: {e}")
+        logger.error(f"Chat resolution error: {e}", exc_info=True)
         chat_cache.pop(cache_key, None)  # Invalidate cache entry
         raise
 
@@ -256,17 +245,20 @@ async def fetch_and_send_message(chat_id, msg_id: int, message: Message, reply_t
         try:
             chat_info = await resolve_chat_with_cache(userbot, chat_id)
             logger.info(f"Chat resolved: {chat_info.title} (ID: {chat_info.id})")
-        except ChannelPrivate:
+        except ChannelPrivate as e:
+            logger.error(f"ChannelPrivate error: {e}", exc_info=True)
             await message.reply("❌ Private channel - userbot needs access. Use /preload with invite link.", reply_to_message_id=reply_to_msg_id)
             return False
-        except UserNotParticipant:
+        except UserNotParticipant as e:
+            logger.error(f"UserNotParticipant error: {e}", exc_info=True)
             await message.reply("❌ Userbot not a member of this channel. Use /preload to join.", reply_to_message_id=reply_to_msg_id)
             return False
-        except PeerIdInvalid:
+        except PeerIdInvalid as e:
+            logger.error(f"PeerIdInvalid error: {e}", exc_info=True)
             await message.reply(f"❌ Cannot access chat. Try `/preload {chat_id}`", reply_to_message_id=reply_to_msg_id)
             return False
         except Exception as e:
-            logger.error(f"Chat resolution error: {e}")
+            logger.error(f"Chat resolution error: {e}", exc_info=True)
             await message.reply(f"❌ Chat access error: {str(e)[:50]}", reply_to_message_id=reply_to_msg_id)
             return False
         
@@ -321,7 +313,7 @@ async def fetch_and_send_message(chat_id, msg_id: int, message: Message, reply_t
                     return False
                     
             except Exception as media_error:
-                logger.error(f"Media send error: {media_error}")
+                logger.error(f"Media send error: {media_error}", exc_info=True)
                 await message.reply(f"❌ Media error: {str(media_error)[:50]}", reply_to_message_id=reply_to_msg_id)
                 return False
         else:
@@ -333,12 +325,13 @@ async def fetch_and_send_message(chat_id, msg_id: int, message: Message, reply_t
         return True
         
     except FloodWait as e:
+        logger.warning(f"Flood wait: {e.value} seconds", exc_info=True)
         await handle_flood_wait(e)
         await message.reply(f"⏳ Rate limited - wait {e.value}s", reply_to_message_id=reply_to_msg_id)
         return False
         
     except Exception as e:
-        logger.error(f"Message fetch error {msg_id}: {e}")
+        logger.error(f"Message fetch error {msg_id}: {e}", exc_info=True)
         error_msg = str(e)[:80] + "..." if len(str(e)) > 80 else str(e)
         await message.reply(f"❌ Error: {error_msg}", reply_to_message_id=reply_to_msg_id)
         return False
@@ -420,7 +413,7 @@ async def handle_message_link(_, message: Message):
             update_user_stats(user_id, success=success)
             
     except Exception as e:
-        logger.error(f"Link processing error: {e}")
+        logger.error(f"Link processing error: {e}", exc_info=True)
         await message.reply(f"⚠️ Error: {str(e)[:80]}")
         update_user_stats(user_id, success=False)
 
@@ -444,11 +437,12 @@ async def handle_invite_link(_, message: Message):
         update_user_stats(user_id, success=True)
         
     except FloodWait as e:
+        logger.warning(f"Flood wait during join: {e}", exc_info=True)
         await handle_flood_wait(e)
         await message.reply(f"⏳ Rate limited - try in {e.value}s")
         
     except Exception as e:
-        logger.error(f"Join failed: {e}")
+        logger.error(f"Join failed: {e}", exc_info=True)
         await message.reply(f"❌ Join failed: {str(e)[:50]}")
         update_user_stats(user_id, success=False)
 
@@ -538,6 +532,7 @@ async def test_command(_, message: Message):
             userbot_status = "✅ Connected"
             userbot_info = f"{userbot_me.first_name}"
         except Exception as e:
+            logger.error(f"Userbot test error: {e}", exc_info=True)
             userbot_status = f"❌ Error"
             userbot_info = "Offline"
         
@@ -560,6 +555,7 @@ All systems operational! ✅
         await message.reply(test_result)
         
     except Exception as e:
+        logger.error(f"Test command error: {e}", exc_info=True)
         await message.reply(f"❌ Test failed: {str(e)[:50]}")
 
 @bot.on_message(filters.private & filters.command("help"))
@@ -636,6 +632,7 @@ async def preload_command(_, message: Message):
                 update_user_stats(user_id, success=True)
                 return
             except FloodWait as e:
+                logger.warning(f"Flood wait during preload: {e}", exc_info=True)
                 await status_msg.edit_text(f"⏳ Please wait {e.value} seconds before trying again.")
                 return
         
@@ -658,13 +655,14 @@ async def preload_command(_, message: Message):
             update_user_stats(user_id, success=True)
             
         except Exception as e:
+            logger.error(f"Preload error: {e}", exc_info=True)
             await status_msg.edit_text(f"❌ Failed: {str(e)[:50]}")
             update_user_stats(user_id, success=False)
             
     except Exception as e:
+        logger.error(f"Preload command error: {e}", exc_info=True)
         await message.reply(f"❌ Error: {str(e)[:50]}")
 
-# Owner commands
 @bot.on_message(filters.private & filters.command("admin") & filters.user(CONFIG['OWNER_ID'] or []))
 async def admin_command(_, message: Message):
     """Admin panel"""
@@ -725,7 +723,7 @@ async def main():
         await idle()
         
     except Exception as e:
-        logger.error(f"❌ Startup error: {e}")
+        logger.error(f"❌ Startup error: {e}", exc_info=True)
         logger.error(traceback.format_exc())
     finally:
         logger.info("🔄 Shutting down...")
