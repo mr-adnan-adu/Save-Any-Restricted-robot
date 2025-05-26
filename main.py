@@ -5,6 +5,7 @@ from pyrogram.errors import FloodWait
 import os
 import logging
 import re
+from aiohttp import web
 
 # Basic configuration
 logging.basicConfig(
@@ -14,11 +15,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Environment variables
-API_ID = int(os.environ.get("API_ID"))
-API_HASH = os.environ.get("API_HASH")
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-SESSION_STRING = os.environ.get("SESSION_STRING")
-OWNER_ID = int(os.environ.get("OWNER_ID"))
+API_ID = int(os.environ["API_ID"])
+API_HASH = os.environ["API_HASH"]
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+SESSION_STRING = os.environ["SESSION_STRING"]
+PORT = int(os.environ.get("PORT", 8000))
 
 # Initialize clients
 bot = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -27,10 +28,21 @@ userbot = Client("userbot", api_id=API_ID, api_hash=API_HASH, session_string=SES
 # Rate limiting storage
 user_cooldown = {}
 
+async def health_check(request):
+    return web.Response(text="OK")
+
+async def start_server():
+    app = web.Application()
+    app.add_routes([web.get("/", health_check)])
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    logger.info(f"Server started on port {PORT}")
+
 async def handle_link(client: Client, message: Message):
     user_id = message.from_user.id
     
-    # Basic rate limiting
     if user_id in user_cooldown:
         await message.reply("⚠️ Please wait 5 seconds between requests")
         return
@@ -40,7 +52,6 @@ async def handle_link(client: Client, message: Message):
     try:
         link = message.text
         if "t.me/c/" in link or "t.me/+" in link:
-            # Parse message IDs from link
             parts = re.findall(r't\.me/(?:c/|)(\d+)/(\d+)', link)
             if not parts:
                 await message.reply("❌ Invalid link format")
@@ -55,7 +66,6 @@ async def handle_link(client: Client, message: Message):
             else:
                 await message.reply("❌ Message not found")
             
-            # Reset cooldown after 5 seconds
             await asyncio.sleep(5)
             del user_cooldown[user_id]
             
@@ -81,10 +91,11 @@ async def message_handler(client: Client, message: Message):
         await handle_link(client, message)
 
 async def main():
+    await start_server()
     await bot.start()
     await userbot.start()
     logger.info("Bot started!")
-    await idle()  # This keeps the bot running
+    await idle()
     await bot.stop()
     await userbot.stop()
 
