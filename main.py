@@ -454,39 +454,39 @@ async def start_command(_, message: Message):
     user_id = message.from_user.id
     user_name = message.from_user.first_name
     
-    is_authorized = is_owner_or_authorized(user_id)
-    status_emoji = "👑" if is_owner(user_id) else "⭐" if is_authorized else "👤"
+    is_auth = is_owner_or_authorized(user_id)
+    status_emoji = "👑" if is_owner(user_id) else "⭐" if is_auth else "👤"
     
     welcome_text = f"""
-🤖 **Enhanced Content Fetcher Bot**
+    🤖 **Enhanced Content Fetcher Bot**
 
-{status_emoji} Hello **{user_name}**!
+    {status_emoji} Hello **{user_name}**!
 
-**📊 Status:** ✅ Online
-**🆔 Your ID:** `{user_id}`
-**⏰ Time:** `{datetime.now().strftime('%H:%M:%S')}`
-**🔐 Access:** {"Owner" if is_owner(user_id) else "Authorized" if is_authorized else "Standard"}
+    **📊 Status:** ✅ Online
+    **🆔 Your ID:** `{user_id}`
+    **⏰ Time:** `{datetime.now().strftime('%H:%M:%S')}`
+    **🔐 Access:** {"Owner" if is_owner(user_id) else "Authorized" if is_auth else "Standard"}
 
-**📝 Usage:**
-• Send Telegram links to fetch content
-• Private: `t.me/c/123456789/1`
-• Public: `t.me/channel/1`
-• Range: `t.me/c/123456789/1-5`
+    **📝 Usage:**
+    • Send Telegram links to fetch content
+    • Private: `t.mec/123456789/1`
+    • Public: `t.me/channel/1`
+    • Range: `t.me/c/123456789/1-5`
 
-**⚡ Limits:**
-• Rate: {CONFIG['ADMIN_RATE_LIMIT'] if is_authorized else CONFIG['RATE_LIMIT']}s between requests
-• Messages: {CONFIG['MAX_MESSAGES'] * 2 if is_authorized else CONFIG['MAX_MESSAGES']} per request
-• File size: {CONFIG['MAX_FILE_SIZE'] // (1024*1024)}MB max
+    **⚡ Limits:**
+    • Rate: {CONFIG['ADMIN_RATE_LIMIT'] if is_auth else CONFIG['RATE_LIMIT']}s between requests
+    • Messages: {CONFIG['MAX_MESSAGES'] * 2 if is_auth else CONFIG['MAX_MESSAGES']} per request
+    • File size: {CONFIG['MAX_FILE_SIZE'] // (1024*1024)}MB max
 
-**🔧 Commands:**
-/help - Detailed help
-/stats - Your statistics  
-/test - System status
-/preload - Fix peer errors
+    **🔧 Commands:**
+    /help - Detailed help
+    /stats - Your statistics  
+    /test - System status
+    /preload - Fix peer errors
 
-Ready to fetch content! 🚀
+    Ready to fetch content! 🚀
     """
-    await message.reply(welcome_text)
+    await message.reply(welcome_text.strip())
 
 @bot.on_message(filters.private & filters.command("stats"))
 async def stats_command(_, message: Message):
@@ -494,20 +494,20 @@ async def stats_command(_, message: Message):
     user_id = message.from_user.id
     
     if user_id not in user_stats:
-        await message.reply("📊 **Statistics**\n\nNo data yet. Start using the bot!")
+        await message.reply("📊 **Statistics**\n\nNo data yet! Start using the bot.")
         return
     
     stats = user_stats[user_id]
-    success_rate = (stats['successful_requests'] / stats['total_requests'] * 100) if stats['total_requests'] > 0 else 0
+    success_rate = (stats['successful_requests'] / stats['total_requests'] * total100) if stats['total_requests'] > 0 else 0
     
     stats_text = f"""
 📊 **Your Statistics**
 
 **📈 Requests:**
 • Total: {stats['total_requests']}
-• Success: {stats['successful_requests']}
+• Successful: {stats['successful_requests']}
 • Failed: {stats['failed_requests']}
-• Rate: {success_rate:.1f}%
+• Rate: {success_rate:.1f}%**
 
 **📅 Activity:**
 • First: {stats['first_seen'].strftime('%d/%m %H:%M')}
@@ -633,10 +633,11 @@ async def preload_command(_, message: Message):
                 await status_msg.edit_text(f"✅ Joined: **{chat.title}**\nID: `{chat.id}`")
                 update_user_stats(user_id, success=True)
                 return
-            except FloodWait as e:
-                logger.warning(f"Flood wait during preload: {e}", exc_info=True)
-                await status_msg.edit_text(f"⏳ Please wait {e.value} seconds before trying again.")
-                return
+            except Exception as e:
+                logger.error(f"Preload error: {e}", exc_info=True)
+                await status_msg.edit_text(f"❌ Failed: {str(e)[:50]}")
+                update_user_stats(user_id, success=False)
+                return False
         
         # Existing resolution logic
         try:
@@ -644,7 +645,7 @@ async def preload_command(_, message: Message):
                 parsed = parse_telegram_link(chat_input)
                 if not parsed:
                     await status_msg.edit_text("❌ Invalid link format")
-                    return
+                    return False
                 chat_id = parsed['chat_id']
             else:
                 try:
@@ -653,26 +654,29 @@ async def preload_command(_, message: Message):
                     chat_id = chat_input
             
             chat_info = await resolve_chat_with_cache(userbot, chat_id)
-            await status_msg.edit_text(f"✅ Preloaded: **{chat_info.title}**\nID: `{chat_info.id}`")
+            await status_msg.edit_text(f'✅ Preloaded: **{chat_info.title}**\nID: `{chat_info.id}`")
             update_user_stats(user_id, success=True)
+            return True
             
         except Exception as e:
             logger.error(f"Preload error: {e}", exc_info=True)
             await status_msg.edit_text(f"❌ Failed: {str(e)[:50]}")
             update_user_stats(user_id, success=False)
+            return False
             
     except Exception as e:
         logger.error(f"Preload command error: {e}", exc_info=True)
         await message.reply(f"❌ Error: {str(e)[:50]}")
+        update_user_stats(user_id, success=False)
 
-@bot.on_message(filters.private & filters.command("admin") & filters.user(CONFIG['OWNER_ID'] or []))
+@bot.on_message(filters.private & filters.command & filters.user(CONFIG['OWNER_ID'] or []))
 async def admin_command(_, message: Message):
     """Admin panel"""
     total_users = len(user_stats)
-    total_requests = sum(stats['total_requests'] for stats in user_stats.values())
+    total_requests = sum(stats['total_requests'] for requests in stats.values())
     cached_chats = len(chat_cache)
     
-    admin_text = f"""
+    admin_text = """
 👑 **Admin Panel**
 
 **📊 Statistics:**
@@ -688,13 +692,13 @@ async def admin_command(_, message: Message):
 • Cache Entries: {len(chat_cache)}
 
 **🔧 Admin Commands:**
-/broadcast <message> - Send to all users
+/ broadcast
 /adduser <user_id> - Add authorized user
-/removeuser <user_id> - Remove user
-/clearcache - Clear chat cache
+/removeuser <user_id> - Remove authorized user
+/clearcache - Clear cache
 /userstats - Detailed user stats
     """
-    await message.reply(admin_text)
+    await message.reply(admin_text.strip())
 
 # Ignore non-private messages
 @bot.on_message()
@@ -702,7 +706,7 @@ async def ignore_non_private(_, message: Message):
     if message.chat.type != "private":
         return
 
-# Custom update handler to catch PeerIdInvalid errors
+# Custom update handler to catch invalid peer errors
 async def handle_raw_update(client: Client, update: Update, users: Dict, chats: Dict):
     """Handle raw updates to catch invalid peer errors"""
     try:
@@ -711,9 +715,9 @@ async def handle_raw_update(client: Client, update: Update, users: Dict, chats: 
     except PeerIdInvalid as e:
         logger.warning(f"Invalid peer ID in update: {e}", exc_info=True)
         if isinstance(update, dict) and 'channel_id' in update:
-            channel_id = update.get('channel_id')
+            channel_id = update.get('channel_id', '')
             logger.info(f"Use /preload {channel_id} to join the channel")
-    except Exception as e:
+    except Exception музика e:
         logger.error(f"Error processing update: {e}", exc_info=True)
 
 # HTTP server for Render health check
@@ -722,7 +726,7 @@ async def health_check(request):
     return web.Response(text="OK", status=200)
 
 async def root_endpoint(request):
-    """Root endpoint to handle Render's default requests"""
+    """Root endpoint to handle Render's default request"""
     return web.Response(text="Bot is running", status=200)
 
 async def start_http_server():
@@ -730,8 +734,7 @@ async def start_http_server():
     app = web.Application()
     app.add_routes([
         web.get('/health', health_check),
-        web.get('/', root_endpoint),
-        web.head('/', root_endpoint)
+        web.get('/', root_endpoint)
     ])
     runner = web.AppRunner(app)
     await runner.setup()
@@ -743,6 +746,8 @@ async def start_http_server():
 async def main():
     """Main function"""
     logger.info("🚀 Starting Enhanced Content Fetcher Bot...")
+    bot_started = False
+    userbot_started = False
     
     try:
         # Start HTTP server for Render
@@ -753,7 +758,9 @@ async def main():
         
         # Start both clients
         await bot.start()
+        bot_started = True
         await userbot.start()
+        userbot_started = True
         
         bot_me = await bot.get_me()
         userbot_me = await userbot.get_me()
@@ -772,8 +779,13 @@ async def main():
         logger.error(traceback.format_exc())
     finally:
         logger.info("🔄 Shutting down...")
-        await bot.stop()
-        await userbot.stop()
+        try:
+            if bot_started:
+                await bot.stop()
+            if userbot_started:
+                await userbot.stop()
+        except Exception as e:
+            logger.error(f"Shutdown error: {e}", exc_info=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
