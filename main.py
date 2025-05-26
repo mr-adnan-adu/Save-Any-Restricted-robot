@@ -1,12 +1,13 @@
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message
-from pyrogram.errors import FloodWait, ChatAdminRequired, UserNotParticipant, ChannelPrivate
+from pyrogram.errors import FloodWait, ChatAdminRequired, UserNotParticipant, ChannelPrivate, PeerIdInvalid
 import asyncio
 import os
 import logging
 from datetime import datetime, timedelta
 import json
 import time
+from aiohttp import web
 
 # Enhanced logging configuration
 logging.basicConfig(
@@ -260,6 +261,10 @@ async def handle_private_link(_, message: Message):
             return
         except UserNotParticipant:
             await message.reply("❌ Userbot is not a member of this channel.")
+            update_user_stats(user_id, success=False)
+            return
+        except PeerIdInvalid:
+            await message.reply("❌ Cannot access this chat. The userbot may need to join first or the chat may not exist.")
             update_user_stats(user_id, success=False)
             return
         except Exception as e:
@@ -547,10 +552,29 @@ async def admin_command(_, message: Message):
     """
     await message.reply(admin_text)
 
+async def start_health_server():
+    """Start a simple health check server to satisfy Render's port requirements"""
+    async def health_check(request):
+        return web.Response(text="Bot is running!", status=200)
+    
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    app.router.add_get('/health', health_check)
+    
+    port = int(os.environ.get('PORT', 8080))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    logger.info(f"Health server started on port {port}")
+
 async def main():
     """Enhanced main function with better error handling"""
     try:
         logger.info("🚀 Starting bot initialization...")
+        
+        # Start health server for Render
+        await start_health_server()
         
         # Start bot client
         await bot.start()
