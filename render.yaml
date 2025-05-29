@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: telegram-userbot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: PHONE_NUMBER
+        sync: false
+      - key: SESSION_STRING
+        sync: false
+    disk:
+      name: userbot-storage
+      mountPath: /tmp
+      sizeGB: 1
