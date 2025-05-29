@@ -1,791 +1,580 @@
-from pyrogram import Client, filters, idle
-from pyrogram.types import Message, Update
-from pyrogram.handlers import MessageHandler
-from pyrogram.errors import FloodWait, ChatAdminRequired, UserNotParticipant, ChannelPrivate, PeerIdInvalid
-import asyncio
-import os
+# main.py - Updated for Render deployment
 import logging
-from datetime import datetime, timedelta
-import json
-import time
-from aiohttp import web
 import re
-import warnings
-from typing import Dict, Optional, Tuple, Any
-import traceback
+import asyncio
+import sqlite3
+import os
+from typing import List, Optional, Tuple, Union
+from datetime import datetime, timedelta
 
-# Suppress asyncio task warnings
-warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*coroutine.*was never awaited.*")
+from telethon import TelegramClient, events
+from telethon.errors import (
+    SessionPasswordNeededError, 
+    FloodWaitError,
+    ChatAdminRequiredError,
+    MessageNotModifiedError
+)
 
-# Enhanced logging configuration
+# Configure logging for cloud deployment
 logging.basicConfig(
-    level=logging.INFO, 
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO,
     handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('bot.log', mode='a')
+        logging.StreamHandler(),  # Console output for Render logs
+        logging.FileHandler('userbot.log') if os.path.exists('/tmp') else logging.NullHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
-# Environment variables with enhanced validation
-def load_config() -> Dict[str, Any]:
-    """Load and validate configuration from environment variables"""
-    config = {
-        'API_ID': os.environ.get("API_ID"),
-        'API_HASH': os.environ.get("API_HASH"),
-        'BOT_TOKEN': os.environ.get("BOT_TOKEN"),
-        'SESSION_STRING': os.environ.get("SESSION_STRING") or os.environ.get("USERBOT_SESSION_STRING"),
-        'OWNER_ID': os.environ.get("OWNER_ID"),
-        'MAX_MESSAGES': int(os.environ.get("MAX_MESSAGES", "20")),
-        'RATE_LIMIT': int(os.environ.get("RATE_LIMIT_SECONDS", "3")),
-        'ADMIN_RATE_LIMIT': int(os.environ.get("ADMIN_RATE_LIMIT", "1")),
-        'MAX_FILE_SIZE': int(os.environ.get("MAX_FILE_SIZE_MB", "50")) * 1024 * 1024,  # Convert MB to bytes
-        'AUTHORIZED_USERS': os.environ.get("AUTHORIZED_USERS", "").split(',') if os.environ.get("AUTHORIZED_USERS") else [],
-        'PORT': int(os.environ.get("PORT", 10000))  # Default to 10000 for Render
-    }
-    
-    # Validate required fields
-    required_fields = ['API_ID', 'API_HASH', 'BOT_TOKEN', 'SESSION_STRING']
-    missing_fields = [field for field in required_fields if not config[field]]
-    
-    if missing_fields:
-        logger.error(f"Missing required environment variables: {missing_fields}")
-        available_vars = [key for key in os.environ.keys() if any(term in key.upper() for term in ['API', 'BOT', 'SESSION', 'TOKEN', 'HASH'])]
-        logger.info(f"Available environment variables: {available_vars}")
-        raise ValueError(f"Missing required environment variables: {missing_fields}")
-    
-    try:
-        config['API_ID'] = int(config['API_ID'])
-        config['OWNER_ID'] = int(config['OWNER_ID']) if config['OWNER_ID'] else None
-        config['AUTHORIZED_USERS'] = [int(uid.strip()) for uid in config['AUTHORIZED_USERS'] if uid.strip().isdigit()]
-    except ValueError as e:
-        logger.error(f"Invalid numeric environment variable: {e}")
-        raise
-    
-    # Log configuration (masked)
-    logger.info(f"Configuration loaded:")
-    logger.info(f"API_ID: {config['API_ID']}")
-    logger.info(f"API_HASH: {'*' * 10}")
-    logger.info(f"BOT_TOKEN: {'*' * 20}")
-    logger.info(f"SESSION_STRING: {'*' * 20}")
-    logger.info(f"OWNER_ID: {config['OWNER_ID']}")
-    logger.info(f"MAX_MESSAGES: {config['MAX_MESSAGES']}")
-    logger.info(f"RATE_LIMIT: {config['RATE_LIMIT']} seconds")
-    logger.info(f"AUTHORIZED_USERS: {len(config['AUTHORIZED_USERS'])} users")
-    logger.info(f"PORT: {config['PORT']}")
-    
-    return config
-
-# Load configuration
-try:
-    CONFIG = load_config()
-except Exception as e:
-    logger.error(f"Configuration error: {e}")
-    raise SystemExit(1)
-
-# Initialize clients
-bot = Client(
-    "content_bot",
-    api_id=CONFIG['API_ID'],
-    api_hash=CONFIG['API_HASH'],
-    bot_token=CONFIG['BOT_TOKEN'],
-)
-
-userbot = Client(
-    "content_userbot",
-    api_id=CONFIG['API_ID'],
-    api_hash=CONFIG['API_HASH'],
-    session_string=CONFIG['SESSION_STRING']
-)
-
-# Enhanced rate limiting with user statistics
-user_stats = {}
-user_last_request = {}
-chat_cache = {}  # Cache for resolved chats
-
-def update_user_stats(user_id: int, success: bool = True) -> None:
-    """Update user statistics"""
-    if user_id not in user_stats:
-        user_stats[user_id] = {
-            'total_requests': 0,
-            'successful_requests': 0,
-            'failed_requests': 0,
-            'first_seen': datetime.now(),
-            'last_seen': datetime.now(),
-            'bytes_transferred': 0
-        }
-    
-    user_stats[user_id]['total_requests'] += 1
-    user_stats[user_id]['last_seen'] = datetime.now()
-    
-    if success:
-        user_stats[user_id]['successful_requests'] += 1
-    else:
-        user_stats[user_id]['failed_requests'] += 1
-
-def is_rate_limited(user_id: int) -> Tuple[bool, int]:
-    """Check if user is rate limited"""
-    now = datetime.now()
-    rate_limit = CONFIG['ADMIN_RATE_LIMIT'] if is_owner_or_authorized(user_id) else CONFIG['RATE_LIMIT']
-    
-    if user_id in user_last_request:
-        time_diff = now - user_last_request[user_id]
-        if time_diff < timedelta(seconds=rate_limit):
-            return True, rate_limit - time_diff.seconds
-    user_last_request[user_id] = now
-    return False, 0
-
-def is_owner(user_id: int) -> bool:
-    """Check if user is bot owner"""
-    return CONFIG['OWNER_ID'] and user_id == CONFIG['OWNER_ID']
-
-def is_owner_or_authorized(user_id: int) -> bool:
-    """Check if user is owner or authorized"""
-    return is_owner(user_id) or user_id in CONFIG['AUTHORIZED_USERS']
-
-async def handle_flood_wait(e: FloodWait) -> None:
-    """Handle Telegram flood wait errors"""
-    wait_time = e.value if hasattr(e, 'value') else 60
-    logger.warning(f"Flood wait: {wait_time} seconds", exc_info=True)
-    await asyncio.sleep(wait_time)
-
-def parse_telegram_link(link: str) -> Optional[Dict[str, Any]]:
-    """Enhanced link parsing with better validation"""
-    link = link.strip()
-    
-    # Patterns for different link formats
-    private_link_pattern = r'https://t\.me/c/(\d+)/(\d+)(?:-(\d+))?'
-    public_link_pattern = r'https://t\.me/([^/]+)/(\d+)(?:-(\d+))?'
-    invite_link_pattern = r'https://t\.me/\+(\w+)'
-    
-    # Try private link first
-    match = re.match(private_link_pattern, link)
-    if match:
-        channel_id_part = match.group(1)
-        start_msg = int(match.group(2))
-        end_msg = int(match.group(3)) if match.group(3) else None
-        chat_id = int("-100" + channel_id_part)
+class TelegramUserbot:
+    def __init__(self):
+        # Get credentials from environment variables
+        self.api_id = int(os.getenv('API_ID', '0'))
+        self.api_hash = os.getenv('API_HASH', '')
+        self.phone_number = os.getenv('PHONE_NUMBER', '')
+        self.session_string = os.getenv('SESSION_STRING', '')
         
-        return {
-            'type': 'private',
-            'chat_id': chat_id,
-            'start_msg': start_msg,
-            'end_msg': end_msg,
-            'is_range': end_msg is not None
-        }
-    
-    # Try public link
-    match = re.match(public_link_pattern, link)
-    if match:
-        username = match.group(1)
-        start_msg = int(match.group(2))
-        end_msg = int(match.group(3)) if match.group(3) else None
+        # Validate credentials
+        if not all([self.api_id, self.api_hash, self.phone_number]):
+            raise ValueError("Missing required environment variables: API_ID, API_HASH, PHONE_NUMBER")
         
-        return {
-            'type': 'public',
-            'chat_id': username,
-            'start_msg': start_msg,
-            'end_msg': end_msg,
-            'is_range': end_msg is not None
-        }
+        # Use session string if available, otherwise create new session
+        if self.session_string:
+            from telethon.sessions import StringSession
+            session = StringSession(self.session_string)
+        else:
+            session = 'userbot_session'
+        
+        self.client = TelegramClient(session, self.api_id, self.api_hash)
+        self.db_path = "/tmp/userbot_data.db" if os.path.exists('/tmp') else "userbot_data.db"
+        self.downloads_path = "/tmp/downloads" if os.path.exists('/tmp') else "downloads"
+        self.rate_limit_delay = 1
+        self.last_operation_time = datetime.now()
+        
+        # Create downloads directory
+        os.makedirs(self.downloads_path, exist_ok=True)
+        
+        self._setup_database()
+        self._setup_handlers()
     
-    # Try invite link
-    match = re.match(invite_link_pattern, link)
-    if match:
-        return {
-            'type': 'invite',
-            'hash': match.group(1)
-        }
+    def _setup_database(self):
+        """Initialize SQLite database"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS processed_links (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_chat_id INTEGER,
+                    source_msg_id INTEGER,
+                    target_chat_id INTEGER,
+                    processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    status TEXT DEFAULT 'success'
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS userbot_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS health_check (
+                    last_ping TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    status TEXT DEFAULT 'healthy'
+                )
+            """)
+            conn.commit()
     
-    return None
+    def _setup_handlers(self):
+        """Setup userbot event handlers"""
+        
+        @self.client.on(events.NewMessage(pattern=r'^\.help$'))
+        async def help_handler(event):
+            help_text = """
+🤖 **Userbot Commands (Cloud Deployed):**
 
-async def resolve_chat_with_cache(client: Client, chat_id) -> Any:
-    """Resolve chat with caching to improve performance"""
-    cache_key = str(chat_id)
-    
-    # Check cache first
-    if cache_key in chat_cache:
-        cached_time, chat_info = chat_cache[cache_key]
-        # Cache valid for 1 hour
-        if datetime.now() - cached_time < timedelta(hours=1):
-            logger.info(f"Using cached chat info for {chat_id}")
-            return chat_info
-    
-    # Resolve chat
-    try:
-        chat_info = await client.get_chat(chat_id)
-        # Cache the result
-        chat_cache[cache_key] = (datetime.now(), chat_info)
-        logger.info(f"Resolved and cached chat: {chat_info.title}")
-        return chat_info
-        
-    except (PeerIdInvalid, KeyError, ValueError):
-        # Try searching in dialogs
-        logger.info(f"Searching for chat {chat_id} in dialogs...")
-        async for dialog in client.get_dialogs():
-            if dialog.chat.id == chat_id:
-                chat_info = dialog.chat
-                chat_cache[cache_key] = (datetime.now(), chat_info)
-                logger.info(f"Found and cached from dialogs: {chat_info.title}")
-                return chat_info
-        
-        raise PeerIdInvalid(f"Cannot resolve peer {chat_id}")
-    except ChannelPrivate:
-        raise ChannelPrivate("Userbot not in channel. Use /preload with invite link.")
-    except Exception as e:
-        logger.error(f"Chat resolution error: {e}", exc_info=True)
-        chat_cache.pop(cache_key, None)  # Invalidate cache entry
-        raise
+**Basic Commands:**
+• `.help` - Show this help
+• `.stats` - Show processing statistics
+• `.health` - Check bot health
+• `.ping` - Test bot responsiveness
 
-async def fetch_and_send_message(chat_id, msg_id: int, message: Message, reply_to_msg_id: Optional[int] = None) -> bool:
-    """Enhanced message fetching with better error handling"""
-    try:
-        logger.info(f"Fetching message {msg_id} from chat {chat_id}")
+**Link Processing:**
+• `.forward <links>` - Forward messages from links
+• `.copy <links>` - Copy messages without forward tag
+• `.download <links>` - Download media from links
+
+**Supported Link Formats:**
+• `https://t.me/c/123456789/100`
+• `https://t.me/username/100`
+• `t.me/c/123456789/100-200` (range)
+• `123456789/100` (short format)
+
+**Cloud Features:**
+• `.session` - Get current session string
+• `.logs` - Show recent logs
+• `.restart` - Restart bot (admin only)
+
+**Settings:**
+• `.delay <seconds>` - Set delay between operations
+• `.target <chat_id>` - Set default target chat
+
+**Deploy Status:**
+🌐 Deployed on Render
+📍 Server Location: Cloud
+⚡ Auto-restart enabled
+            """
+            await event.reply(help_text)
         
-        # Resolve chat
-        try:
-            chat_info = await resolve_chat_with_cache(userbot, chat_id)
-            logger.info(f"Chat resolved: {chat_info.title} (ID: {chat_info.id})")
-        except ChannelPrivate as e:
-            logger.error(f"ChannelPrivate error: {e}", exc_info=True)
-            await message.reply("❌ Private channel - userbot needs access. Use /preload with invite link.", reply_to_message_id=reply_to_msg_id)
-            return False
-        except UserNotParticipant as e:
-            logger.error(f"UserNotParticipant error: {e}", exc_info=True)
-            await message.reply("❌ Userbot not a member of this channel. Use /preload to join.", reply_to_message_id=reply_to_msg_id)
-            return False
-        except PeerIdInvalid as e:
-            logger.error(f"PeerIdInvalid error: {e}", exc_info=True)
-            await message.reply(f"❌ Cannot access chat. Try `/preload {chat_id}`", reply_to_message_id=reply_to_msg_id)
-            return False
-        except Exception as e:
-            logger.error(f"Chat resolution error: {e}", exc_info=True)
-            await message.reply(f"❌ Chat access error: {str(e)[:50]}", reply_to_message_id=reply_to_msg_id)
-            return False
+        @self.client.on(events.NewMessage(pattern=r'^\.ping$'))
+        async def ping_handler(event):
+            start_time = datetime.now()
+            msg = await event.reply("🏃‍♂️ Pinging...")
+            end_time = datetime.now()
+            latency = (end_time - start_time).total_seconds() * 1000
+            
+            await msg.edit(f"🏓 **Pong!**\n"
+                          f"⚡ Latency: {latency:.2f}ms\n"
+                          f"🌐 Status: Online\n"
+                          f"📅 Uptime: {self._get_uptime()}")
         
-        # Get the message
-        msg = await userbot.get_messages(chat_id, msg_id)
+        @self.client.on(events.NewMessage(pattern=r'^\.health$'))
+        async def health_handler(event):
+            await self._health_check(event)
         
-        if not msg:
-            await message.reply(f"⚠️ Message {msg_id} not found", reply_to_message_id=reply_to_msg_id)
-            return False
-        
-        # Handle different message types
-        if msg.text or msg.caption:
-            content = msg.text or msg.caption
-            if len(content) > 4096:
-                # Split long messages
-                for i in range(0, len(content), 4096):
-                    chunk = content[i:i+4096]
-                    await message.reply(chunk, reply_to_message_id=reply_to_msg_id)
-                    await asyncio.sleep(0.5)
+        @self.client.on(events.NewMessage(pattern=r'^\.session$'))
+        async def session_handler(event):
+            # Only allow in private chat for security
+            if event.is_private:
+                session_string = self.client.session.save()
+                await event.reply(
+                    f"🔐 **Session String:**\n"
+                    f"```\n{session_string}\n```\n\n"
+                    f"⚠️ **Keep this secure!** Save it as SESSION_STRING environment variable.",
+                    parse_mode='markdown'
+                )
             else:
-                await message.reply(content, reply_to_message_id=reply_to_msg_id)
-                
-        elif msg.media:
-            caption = msg.caption or ""
-            
-            # Check file size for documents
-            if msg.document and msg.document.file_size > CONFIG['MAX_FILE_SIZE']:
-                size_mb = msg.document.file_size / (1024 * 1024)
-                max_mb = CONFIG['MAX_FILE_SIZE'] / (1024 * 1024)
-                await message.reply(f"⚠️ File too large: {size_mb:.1f}MB (max: {max_mb}MB)", reply_to_message_id=reply_to_msg_id)
-                return False
-            
+                await event.reply("❌ Session string only available in private chat!")
+        
+        @self.client.on(events.NewMessage(pattern=r'^\.logs$'))
+        async def logs_handler(event):
             try:
-                if msg.document:
-                    await message.reply_document(msg.document.file_id, caption=caption, reply_to_message_id=reply_to_msg_id)
-                elif msg.photo:
-                    await message.reply_photo(msg.photo.file_id, caption=caption, reply_to_message_id=reply_to_msg_id)
-                elif msg.video:
-                    await message.reply_video(msg.video.file_id, caption=caption, reply_to_message_id=reply_to_msg_id)
-                elif msg.audio:
-                    await message.reply_audio(msg.audio.file_id, caption=caption, reply_to_message_id=reply_to_msg_id)
-                elif msg.voice:
-                    await message.reply_voice(msg.voice.file_id, caption=caption, reply_to_message_id=reply_to_msg_id)
-                elif msg.video_note:
-                    await message.reply_video_note(msg.video_note.file_id, reply_to_message_id=reply_to_msg_id)
-                elif msg.sticker:
-                    await message.reply_sticker(msg.sticker.file_id, reply_to_message_id=reply_to_msg_id)
-                elif msg.animation:
-                    await message.reply_animation(msg.animation.file_id, caption=caption, reply_to_message_id=reply_to_msg_id)
+                if os.path.exists('userbot.log'):
+                    with open('userbot.log', 'r') as f:
+                        logs = f.read()[-2000:]  # Last 2000 characters
+                    await event.reply(f"📋 **Recent Logs:**\n```\n{logs}\n```", parse_mode='markdown')
                 else:
-                    await message.reply("⚠️ Unsupported media type", reply_to_message_id=reply_to_msg_id)
-                    return False
-                    
-            except Exception as media_error:
-                logger.error(f"Media send error: {media_error}", exc_info=True)
-                await message.reply(f"❌ Media error: {str(media_error)[:50]}", reply_to_message_id=reply_to_msg_id)
-                return False
-        else:
-            await message.reply("⚠️ Empty message", reply_to_message_id=reply_to_msg_id)
-            return False
-            
-        logger.info(f"✅ Message {msg_id} sent successfully")
-        await asyncio.sleep(0.8)  # Prevent flooding
-        return True
-        
-    except FloodWait as e:
-        logger.warning(f"Flood wait: {e.value} seconds", exc_info=True)
-        await handle_flood_wait(e)
-        await message.reply(f"⏳ Rate limited - wait {e.value}s", reply_to_message_id=reply_to_msg_id)
-        return False
-        
-    except Exception as e:
-        logger.error(f"Message fetch error {msg_id}: {e}", exc_info=True)
-        error_msg = str(e)[:80] + "..." if len(str(e)) > 80 else str(e)
-        await message.reply(f"❌ Error: {error_msg}", reply_to_message_id=reply_to_msg_id)
-        return False
-
-@bot.on_message(filters.private & (filters.regex(r'https://t\.me/c/\d+/\d+') | filters.regex(r'https://t\.me/[^/]+/\d+')))
-async def handle_message_link(_, message: Message):
-    """Handle both private and public channel links"""
-    user_id = message.from_user.id
-    logger.info(f"Link request from user {user_id}: {message.from_user.first_name}")
-    
-    # Rate limiting
-    is_limited, wait_time = is_rate_limited(user_id)
-    if is_limited:
-        await message.reply(f"⏳ Rate limited - wait {wait_time}s")
-        update_user_stats(user_id, success=False)
-        return
-    
-    try:
-        link = message.text.strip()
-        parsed = parse_telegram_link(link)
-        
-        if not parsed:
-            await message.reply("❌ Invalid Telegram link format")
-            update_user_stats(user_id, success=False)
-            return
-        
-        if parsed['type'] == 'invite':
-            await message.reply("⚠️ Please use /preload command with invite links")
-            return
-        
-        chat_id = parsed['chat_id']
-        start_msg = parsed['start_msg']
-        end_msg = parsed['end_msg']
-        is_range = parsed['is_range']
-        
-        logger.info(f"Parsed: chat={chat_id}, start={start_msg}, end={end_msg}, range={is_range}")
-
-        # Handle message range or single message
-        if is_range:
-            if start_msg > end_msg:
-                start_msg, end_msg = end_msg, start_msg
-            
-            message_count = end_msg - start_msg + 1
-            max_allowed = CONFIG['MAX_MESSAGES'] * 2 if is_owner_or_authorized(user_id) else CONFIG['MAX_MESSAGES']
-            
-            if message_count > max_allowed:
-                await message.reply(f"⚠️ Too many messages. Max: {max_allowed}")
-                update_user_stats(user_id, success=False)
-                return
-            
-            status_msg = await message.reply(f"📥 Fetching {message_count} messages ({start_msg}-{end_msg})...")
-            
-            successful = 0
-            failed = 0
-            
-            for msg_id in range(start_msg, end_msg + 1):
-                success = await fetch_and_send_message(chat_id, msg_id, message, reply_to_msg_id=status_msg.id)
-                if success:
-                    successful += 1
-                else:
-                    failed += 1
-                
-                # Progress update every 5 messages
-                if (msg_id - start_msg + 1) % 5 == 0:
-                    progress = f"📊 Progress: {msg_id - start_msg + 1}/{message_count} | ✅ {successful} | ❌ {failed}"
-                    try:
-                        await status_msg.edit_text(progress)
-                    except:
-                        pass
-                    
-                if msg_id < end_msg:
-                    await asyncio.sleep(0.5)
-            
-            await status_msg.edit_text(f"✅ Completed: {successful} successful, {failed} failed")
-            update_user_stats(user_id, success=True)
-            
-        else:
-            success = await fetch_and_send_message(chat_id, start_msg, message)
-            update_user_stats(user_id, success=success)
-            
-    except Exception as e:
-        logger.error(f"Link processing error: {e}", exc_info=True)
-        await message.reply(f"⚠️ Error: {str(e)[:80]}")
-        update_user_stats(user_id, success=False)
-
-@bot.on_message(filters.private & filters.regex(r'https://t\.me/\+'))
-async def handle_invite_link(_, message: Message):
-    """Handle invite links"""
-    user_id = message.from_user.id
-    
-    is_limited, wait_time = is_rate_limited(user_id)
-    if is_limited:
-        await message.reply(f"⏳ Wait {wait_time}s before joining")
-        return
-    
-    invite_link = message.text.strip()
-    logger.info(f"Invite from user {user_id}: {invite_link}")
-    
-    try:
-        chat = await userbot.join_chat(invite_link)
-        logger.info(f"✅ Joined: {chat.title} (ID: {chat.id})")
-        await message.reply(f"✅ Joined: **{chat.title}**\nID: `{chat.id}`")
-        update_user_stats(user_id, success=True)
-        
-    except FloodWait as e:
-        logger.warning(f"Flood wait during join: {e}", exc_info=True)
-        await handle_flood_wait(e)
-        await message.reply(f"⏳ Rate limited - try in {e.value}s")
-        
-    except Exception as e:
-        logger.error(f"Join failed: {e}", exc_info=True)
-        await message.reply(f"❌ Join failed: {str(e)[:50]}")
-        update_user_stats(user_id, success=False)
-
-@bot.on_message(filters.private & filters.command("start"))
-async def start_command(_, message: Message):
-    """Start command with user info"""
-    user_id = message.from_user.id
-    user_name = message.from_user.first_name
-    
-    is_auth = is_owner_or_authorized(user_id)
-    status_emoji = "👑" if is_owner(user_id) else "⭐" if is_auth else "👤"
-    
-    welcome_text = f"""
-    🤖 **Enhanced Content Fetcher Bot**
-
-    {status_emoji} Hello **{user_name}**!
-
-    **📊 Status:** ✅ Online
-    **🆔 Your ID:** `{user_id}`
-    **⏰ Time:** `{datetime.now().strftime('%H:%M:%S')}`
-    **🔐 Access:** {"Owner" if is_owner(user_id) else "Authorized" if is_auth else "Standard"}
-
-    **📝 Usage:**
-    • Send Telegram links to fetch content
-    • Private: `t.mec/123456789/1`
-    • Public: `t.me/channel/1`
-    • Range: `t.me/c/123456789/1-5`
-
-    **⚡ Limits:**
-    • Rate: {CONFIG['ADMIN_RATE_LIMIT'] if is_auth else CONFIG['RATE_LIMIT']}s between requests
-    • Messages: {CONFIG['MAX_MESSAGES'] * 2 if is_auth else CONFIG['MAX_MESSAGES']} per request
-    • File size: {CONFIG['MAX_FILE_SIZE'] // (1024*1024)}MB max
-
-    **🔧 Commands:**
-    /help - Detailed help
-    /stats - Your statistics  
-    /test - System status
-    /preload - Fix peer errors
-
-    Ready to fetch content! 🚀
-    """
-    await message.reply(welcome_text.strip())
-
-@bot.on_message(filters.private & filters.command("stats"))
-async def stats_command(_, message: Message):
-    """User statistics"""
-    user_id = message.from_user.id
-    
-    if user_id not in user_stats:
-        await message.reply("📊 **Statistics**\n\nNo data yet! Start using the bot.")
-        return
-    
-    stats = user_stats[user_id]
-    success_rate = (stats['successful_requests'] / stats['total_requests'] * total100) if stats['total_requests'] > 0 else 0
-    
-    stats_text = f"""
-📊 **Your Statistics**
-
-**📈 Requests:**
-• Total: {stats['total_requests']}
-• Successful: {stats['successful_requests']}
-• Failed: {stats['failed_requests']}
-• Rate: {success_rate:.1f}%**
-
-**📅 Activity:**
-• First: {stats['first_seen'].strftime('%d/%m %H:%M')}
-• Last: {stats['last_seen'].strftime('%d/%m %H:%M')}
-
-**⚙️ Your Limits:**
-• Rate: {CONFIG['ADMIN_RATE_LIMIT'] if is_owner_or_authorized(user_id) else CONFIG['RATE_LIMIT']}s
-• Messages: {CONFIG['MAX_MESSAGES'] * 2 if is_owner_or_authorized(user_id) else CONFIG['MAX_MESSAGES']}
-• Access: {"Authorized" if is_owner_or_authorized(user_id) else "Standard"}
-    """
-    await message.reply(stats_text)
-
-@bot.on_message(filters.private & filters.command("test"))
-async def test_command(_, message: Message):
-    """System test"""
-    user_id = message.from_user.id
-    
-    try:
-        bot_me = await bot.get_me()
-        bot_status = "✅ Online"
-        
-        try:
-            userbot_me = await userbot.get_me()
-            userbot_status = "✅ Connected"
-            userbot_info = f"{userbot_me.first_name}"
-        except Exception as e:
-            logger.error(f"Userbot test error: {e}", exc_info=True)
-            userbot_status = f"❌ Error"
-            userbot_info = "Offline"
-        
-        test_result = f"""
-🧪 **System Test**
-
-**🤖 Bot:** {bot_status}
-**👤 Userbot:** {userbot_status} ({userbot_info})
-**💾 Cache:** {len(chat_cache)} chats cached
-**👥 Users:** {len(user_stats)} total users
-**🔐 Your Access:** {"Owner" if is_owner(user_id) else "Authorized" if is_owner_or_authorized(user_id) else "Standard"}
-
-**⚙️ Limits:**
-• Rate: {CONFIG['RATE_LIMIT']}s (std) / {CONFIG['ADMIN_RATE_LIMIT']}s (auth)
-• Messages: {CONFIG['MAX_MESSAGES']} per request
-• File size: {CONFIG['MAX_FILE_SIZE'] // (1024*1024)}MB max
-
-All systems operational! ✅
-        """
-        await message.reply(test_result)
-        
-    except Exception as e:
-        logger.error(f"Test command error: {e}", exc_info=True)
-        await message.reply(f"❌ Test failed: {str(e)[:50]}")
-
-@bot.on_message(filters.private & filters.command("help"))
-async def help_command(_, message: Message):
-    """Detailed help"""
-    help_text = """
-📖 **Detailed Help**
-
-**🔗 Link Formats:**
-• Single: `t.me/c/1234567890/456`
-• Range: `t.me/c/1234567890/456-460`
-• Public: `t.me/channel_name/456`
-• Invite: `t.me/+invitecode`
-
-**📋 Supported Content:**
-✅ Text messages
-✅ Photos & Videos  
-✅ Documents & Files
-✅ Audio & Voice
-✅ Stickers & GIFs
-
-**⚠️ Limitations:**
-• Rate limiting between requests
-• File size limits apply
-• Bot needs channel access
-• Some content may be restricted
-
-**🔧 Commands:**
-• `/preload <chat_id_or_link>` - Fix access issues
-   Example: `/preload https://t.me/+invitecode`
-• `/stats` - Your usage statistics
-• `/test` - Check system status
-
-**💡 Tips:**
-• Use `/preload` for peer errors
-• Private channels need userbot access
-• Large ranges take time to process
-
-**❓ Common Issues:**
-• "Cannot access" → Use `/preload`
-• "Peer invalid" → Try `/preload <chat_id>`  
-• "Not found" → Message deleted
-• "Rate limited" → Wait between requests
-
-Need help? Contact support! 📞
-    """
-    await message.reply(help_text)
-
-@bot.on_message(filters.private & filters.command("preload"))
-async def preload_command(_, message: Message):
-    """Preload chat command with invite link support"""
-    user_id = message.from_user.id
-    
-    is_limited, wait_time = is_rate_limited(user_id)
-    if is_limited:
-        await message.reply(f"⏳ Wait {wait_time}s")
-        return
-    
-    try:
-        args = message.text.split()
-        if len(args) != 2:
-            await message.reply("❌ Usage: `/preload <chat_id_or_link>`\nExample: `/preload -1001234567890`")
-            return
-        
-        chat_input = args[1]
-        status_msg = await message.reply(f"🔄 Preloading: {chat_input}...")
-        
-        # Handle invite links directly
-        if chat_input.startswith('https://t.me/+'):
-            try:
-                chat = await userbot.join_chat(chat_input)
-                chat_id = chat.id
-                await status_msg.edit_text(f"✅ Joined: **{chat.title}**\nID: `{chat.id}`")
-                update_user_stats(user_id, success=True)
-                return
+                    await event.reply("📋 No log file found")
             except Exception as e:
-                logger.error(f"Preload error: {e}", exc_info=True)
-                await status_msg.edit_text(f"❌ Failed: {str(e)[:50]}")
-                update_user_stats(user_id, success=False)
-                return False
+                await event.reply(f"❌ Error reading logs: {str(e)}")
         
-        # Existing resolution logic
-        try:
-            if chat_input.startswith('https://t.me/'):
-                parsed = parse_telegram_link(chat_input)
-                if not parsed:
-                    await status_msg.edit_text("❌ Invalid link format")
-                    return False
-                chat_id = parsed['chat_id']
-            else:
-                try:
-                    chat_id = int(chat_input)
-                except ValueError:
-                    chat_id = chat_input
+        @self.client.on(events.NewMessage(pattern=r'^\.stats$'))
+        async def stats_handler(event):
+            await self._show_statistics(event)
+        
+        @self.client.on(events.NewMessage(pattern=r'^\.forward (.+)'))
+        async def forward_handler(event):
+            links = event.pattern_match.group(1)
+            await self._process_links(event, links, action='forward')
+        
+        @self.client.on(events.NewMessage(pattern=r'^\.copy (.+)'))
+        async def copy_handler(event):
+            links = event.pattern_match.group(1)
+            await self._process_links(event, links, action='copy')
+        
+        @self.client.on(events.NewMessage(pattern=r'^\.download (.+)'))
+        async def download_handler(event):
+            links = event.pattern_match.group(1)
+            await self._process_links(event, links, action='download')
+        
+        @self.client.on(events.NewMessage(pattern=r'^\.range (-?\d+) (\d+) (\d+)'))
+        async def range_handler(event):
+            chat_id = int(event.pattern_match.group(1))
+            start_id = int(event.pattern_match.group(2))
+            end_id = int(event.pattern_match.group(3))
             
-            chat_info = await resolve_chat_with_cache(userbot, chat_id)
-            await status_msg.edit_text(f'✅ Preloaded: **{chat_info.title}**\nID: `{chat_info.id}`")
-            update_user_stats(user_id, success=True)
+            range_link = f"{chat_id}/{start_id}-{end_id}"
+            await self._process_links(event, range_link, action='forward')
+        
+        @self.client.on(events.NewMessage(pattern=r'^\.delay (\d+)'))
+        async def delay_handler(event):
+            delay = int(event.pattern_match.group(1))
+            self.rate_limit_delay = delay
+            await self._save_setting('rate_limit_delay', str(delay))
+            await event.reply(f"✅ Delay set to {delay} seconds")
+    
+    def _get_uptime(self) -> str:
+        """Calculate uptime since start"""
+        try:
+            with open('/proc/uptime', 'r') as f:
+                uptime_seconds = float(f.readline().split()[0])
+                uptime = timedelta(seconds=uptime_seconds)
+                return str(uptime).split('.')[0]
+        except:
+            return "Unknown"
+    
+    async def _health_check(self, event):
+        """Comprehensive health check"""
+        health_info = {
+            'database': 'Unknown',
+            'storage': 'Unknown',
+            'memory': 'Unknown',
+            'network': 'Unknown'
+        }
+        
+        # Database check
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("SELECT 1")
+                health_info['database'] = '✅ Healthy'
+        except Exception as e:
+            health_info['database'] = f'❌ Error: {str(e)[:50]}'
+        
+        # Storage check
+        try:
+            free_space = os.statvfs(self.downloads_path).f_bavail * os.statvfs(self.downloads_path).f_frsize
+            health_info['storage'] = f'✅ {free_space // (1024**2)} MB free'
+        except:
+            health_info['storage'] = '⚠️ Unable to check'
+        
+        # Memory check (if available)
+        try:
+            import psutil
+            memory = psutil.virtual_memory()
+            health_info['memory'] = f'✅ {memory.percent}% used'
+        except:
+            health_info['memory'] = '⚠️ psutil not available'
+        
+        # Network check
+        try:
+            await self.client.get_me()
+            health_info['network'] = '✅ Connected'
+        except Exception as e:
+            health_info['network'] = f'❌ {str(e)[:50]}'
+        
+        # Update health check timestamp
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO health_check (last_ping, status) VALUES (datetime('now'), 'healthy')"
+            )
+            conn.commit()
+        
+        health_text = f"""
+🏥 **Health Check Report**
+
+💾 Database: {health_info['database']}
+📁 Storage: {health_info['storage']}
+🧠 Memory: {health_info['memory']}
+🌐 Network: {health_info['network']}
+
+⏰ Last Check: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+🔄 Uptime: {self._get_uptime()}
+📍 Environment: Cloud (Render)
+        """
+        
+        await event.reply(health_text)
+    
+    async def _rate_limit(self):
+        """Implement rate limiting"""
+        now = datetime.now()
+        time_since_last = (now - self.last_operation_time).total_seconds()
+        
+        if time_since_last < self.rate_limit_delay:
+            sleep_time = self.rate_limit_delay - time_since_last
+            await asyncio.sleep(sleep_time)
+        
+        self.last_operation_time = datetime.now()
+    
+    def _parse_telegram_links(self, text: str) -> List[Tuple[int, List[int]]]:
+        """Parse various Telegram link formats"""
+        results = []
+        
+        # Pattern 1: https://t.me/c/chat_id/msg_id or range
+        pattern1 = r'(?:https?://)?t\.me/c/(-?\d+)/(\d+)(?:-(\d+))?'
+        for match in re.finditer(pattern1, text):
+            chat_id = int(match.group(1))
+            if chat_id > 0:
+                chat_id = int(f"-100{chat_id}")
+            start_msg = int(match.group(2))
+            end_msg = int(match.group(3)) if match.group(3) else start_msg
+            msg_ids = list(range(start_msg, min(end_msg + 1, start_msg + 50)))  # Limit for cloud
+            results.append((chat_id, msg_ids))
+        
+        # Pattern 2: https://t.me/username/msg_id or range
+        pattern2 = r'(?:https?://)?t\.me/([a-zA-Z0-9_]+)/(\d+)(?:-(\d+))?'
+        for match in re.finditer(pattern2, text):
+            username = match.group(1)
+            start_msg = int(match.group(2))
+            end_msg = int(match.group(3)) if match.group(3) else start_msg
+            msg_ids = list(range(start_msg, min(end_msg + 1, start_msg + 50)))
+            results.append((username, msg_ids))
+        
+        # Pattern 3: Short format
+        pattern3 = r'(-?\d+)/(\d+)(?:-(\d+))?'
+        for match in re.finditer(pattern3, text):
+            chat_id = int(match.group(1))
+            start_msg = int(match.group(2))
+            end_msg = int(match.group(3)) if match.group(3) else start_msg
+            msg_ids = list(range(start_msg, min(end_msg + 1, start_msg + 50)))
+            results.append((chat_id, msg_ids))
+        
+        return results
+    
+    async def _resolve_chat_id(self, chat_identifier: Union[str, int]) -> int:
+        """Resolve username or chat ID to actual chat ID"""
+        try:
+            if isinstance(chat_identifier, str):
+                entity = await self.client.get_entity(chat_identifier)
+                return entity.id
+            return chat_identifier
+        except Exception as e:
+            logger.error(f"Failed to resolve chat {chat_identifier}: {e}")
+            raise
+    
+    async def _process_links(self, event, links_text: str, action: str = 'forward'):
+        """Process links with cloud optimizations"""
+        try:
+            parsed_links = self._parse_telegram_links(links_text)
+            
+            if not parsed_links:
+                await event.reply("❌ No valid links found!")
+                return
+            
+            status_msg = await event.reply(f"🔄 Processing {len(parsed_links)} link(s) on cloud...")
+            
+            success_count = 0
+            error_count = 0
+            
+            for chat_identifier, msg_ids in parsed_links:
+                try:
+                    source_chat_id = await self._resolve_chat_id(chat_identifier)
+                    target_chat_id = event.chat_id
+                    
+                    for msg_id in msg_ids:
+                        try:
+                            await self._rate_limit()
+                            
+                            if action == 'forward':
+                                await self._forward_message(source_chat_id, msg_id, target_chat_id)
+                            elif action == 'copy':
+                                await self._copy_message(source_chat_id, msg_id, target_chat_id)
+                            elif action == 'download':
+                                await self._download_message_media(source_chat_id, msg_id)
+                            
+                            success_count += 1
+                            
+                            # Log to database
+                            with sqlite3.connect(self.db_path) as conn:
+                                conn.execute("""
+                                    INSERT INTO processed_links 
+                                    (source_chat_id, source_msg_id, target_chat_id, status)
+                                    VALUES (?, ?, ?, ?)
+                                """, (source_chat_id, msg_id, target_chat_id, 'success'))
+                                conn.commit()
+                        
+                        except FloodWaitError as e:
+                            wait_time = min(e.seconds, 300)  # Max 5 minutes wait
+                            await event.reply(f"⚠️ Rate limited. Waiting {wait_time} seconds...")
+                            await asyncio.sleep(wait_time)
+                            continue
+                        
+                        except Exception as e:
+                            logger.error(f"Failed to process message {msg_id}: {e}")
+                            error_count += 1
+                
+                except Exception as e:
+                    logger.error(f"Failed to process chat {chat_identifier}: {e}")
+                    error_count += len(msg_ids)
+            
+            result_text = f"✅ **Cloud Processing Complete**\n" \
+                         f"✅ Success: {success_count}\n" \
+                         f"❌ Errors: {error_count}\n" \
+                         f"🌐 Server: Render"
+            
+            try:
+                await status_msg.edit(result_text)
+            except MessageNotModifiedError:
+                await event.reply(result_text)
+        
+        except Exception as e:
+            logger.error(f"Error in _process_links: {e}")
+            await event.reply(f"❌ Cloud Error: {str(e)}")
+    
+    async def _forward_message(self, source_chat_id: int, msg_id: int, target_chat_id: int):
+        """Forward a message"""
+        try:
+            message = await self.client.get_messages(source_chat_id, ids=msg_id)
+            if message:
+                await self.client.forward_messages(target_chat_id, message)
+        except Exception as e:
+            logger.error(f"Failed to forward message {msg_id}: {e}")
+            raise
+    
+    async def _copy_message(self, source_chat_id: int, msg_id: int, target_chat_id: int):
+        """Copy a message without forward tag"""
+        try:
+            message = await self.client.get_messages(source_chat_id, ids=msg_id)
+            if message:
+                if message.media:
+                    await self.client.send_file(
+                        target_chat_id,
+                        message.media,
+                        caption=message.text or ""
+                    )
+                else:
+                    await self.client.send_message(target_chat_id, message.text or "")
+        except Exception as e:
+            logger.error(f"Failed to copy message {msg_id}: {e}")
+            raise
+    
+    async def _download_message_media(self, source_chat_id: int, msg_id: int):
+        """Download media with cloud storage"""
+        try:
+            message = await self.client.get_messages(source_chat_id, ids=msg_id)
+            if message and message.media:
+                filename = await self.client.download_media(message, self.downloads_path)
+                logger.info(f"Downloaded to cloud storage: {filename}")
+                return filename
+        except Exception as e:
+            logger.error(f"Failed to download media from message {msg_id}: {e}")
+            raise
+    
+    async def _save_setting(self, key: str, value: str):
+        """Save a setting to database"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO userbot_settings (key, value) VALUES (?, ?)",
+                (key, value)
+            )
+            conn.commit()
+    
+    async def _get_setting(self, key: str, default: str = None) -> Optional[str]:
+        """Get a setting from database"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT value FROM userbot_settings WHERE key = ?", (key,)
+            )
+            result = cursor.fetchone()
+            return result[0] if result else default
+    
+    async def _show_statistics(self, event):
+        """Show comprehensive cloud statistics"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("""
+                SELECT 
+                    COUNT(*) as total,
+                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
+                    SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) as errors
+                FROM processed_links
+                WHERE processed_at > datetime('now', '-24 hours')
+            """)
+            stats = cursor.fetchone()
+            
+            # Get file count in downloads
+            try:
+                download_count = len(os.listdir(self.downloads_path))
+            except:
+                download_count = 0
+            
+            stats_text = f"""
+📊 **Cloud Userbot Statistics (24h)**
+
+✅ Total Processed: {stats[0] or 0}
+✅ Successful: {stats[1] or 0}  
+❌ Errors: {stats[2] or 0}
+📁 Downloads: {download_count} files
+
+⚙️ **Current Settings:**
+• Rate Limit: {self.rate_limit_delay}s
+• Default Target: {await self._get_setting('default_target_chat', 'Not set')}
+
+🌐 **Cloud Environment:**
+• Platform: Render
+• Database: {self.db_path}
+• Storage: {self.downloads_path}
+• Uptime: {self._get_uptime()}
+            """
+            
+            await event.reply(stats_text)
+    
+    async def start(self):
+        """Start the userbot with cloud optimizations"""
+        try:
+            # Connect to Telegram
+            await self.client.start(phone=self.phone_number)
+            
+            # Load saved settings
+            saved_delay = await self._get_setting('rate_limit_delay')
+            if saved_delay:
+                self.rate_limit_delay = int(saved_delay)
+            
+            me = await self.client.get_me()
+            logger.info(f"Cloud userbot started as {me.username or me.first_name}")
+            
+            # Send startup notification
+            await self.client.send_message('me', 
+                "🌐 **Cloud Userbot Started Successfully!**\n\n"
+                f"📍 Deployed on: Render\n"
+                f"⚡ Status: Online\n"
+                f"🔧 Rate Limit: {self.rate_limit_delay}s\n"
+                f"📅 Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                "Type `.help` for available commands.\n"
+                "Type `.health` to check system status."
+            )
+            
             return True
             
-        except Exception as e:
-            logger.error(f"Preload error: {e}", exc_info=True)
-            await status_msg.edit_text(f"❌ Failed: {str(e)[:50]}")
-            update_user_stats(user_id, success=False)
+        except SessionPasswordNeededError:
+            logger.error("Two-factor authentication required. Set up session string.")
             return False
-            
-    except Exception as e:
-        logger.error(f"Preload command error: {e}", exc_info=True)
-        await message.reply(f"❌ Error: {str(e)[:50]}")
-        update_user_stats(user_id, success=False)
-
-@bot.on_message(filters.private & filters.command & filters.user(CONFIG['OWNER_ID'] or []))
-async def admin_command(_, message: Message):
-    """Admin panel"""
-    total_users = len(user_stats)
-    total_requests = sum(stats['total_requests'] for requests in stats.values())
-    cached_chats = len(chat_cache)
-    
-    admin_text = """
-👑 **Admin Panel**
-
-**📊 Statistics:**
-• Total Users: {total_users}
-• Total Requests: {total_requests}
-• Cached Chats: {cached_chats}
-• Authorized Users: {len(CONFIG['AUTHORIZED_USERS'])}
-
-**⚙️ System:**
-• Max Messages: {CONFIG['MAX_MESSAGES']}
-• Rate Limit: {CONFIG['RATE_LIMIT']}s
-• File Size Limit: {CONFIG['MAX_FILE_SIZE'] // (1024*1024)}MB
-• Cache Entries: {len(chat_cache)}
-
-**🔧 Admin Commands:**
-/ broadcast
-/adduser <user_id> - Add authorized user
-/removeuser <user_id> - Remove authorized user
-/clearcache - Clear cache
-/userstats - Detailed user stats
-    """
-    await message.reply(admin_text.strip())
-
-# Ignore non-private messages
-@bot.on_message()
-async def ignore_non_private(_, message: Message):
-    if message.chat.type != "private":
-        return
-
-# Custom update handler to catch invalid peer errors
-async def handle_raw_update(client: Client, update: Update, users: Dict, chats: Dict):
-    """Handle raw updates to catch invalid peer errors"""
-    try:
-        # Let Pyrogram process the update
-        pass
-    except PeerIdInvalid as e:
-        logger.warning(f"Invalid peer ID in update: {e}", exc_info=True)
-        if isinstance(update, dict) and 'channel_id' in update:
-            channel_id = update.get('channel_id', '')
-            logger.info(f"Use /preload {channel_id} to join the channel")
-    except Exception музика e:
-        logger.error(f"Error processing update: {e}", exc_info=True)
-
-# HTTP server for Render health check
-async def health_check(request):
-    """Health check endpoint for Render"""
-    return web.Response(text="OK", status=200)
-
-async def root_endpoint(request):
-    """Root endpoint to handle Render's default request"""
-    return web.Response(text="Bot is running", status=200)
-
-async def start_http_server():
-    """Start a minimal HTTP server for Render"""
-    app = web.Application()
-    app.add_routes([
-        web.get('/health', health_check),
-        web.get('/', root_endpoint)
-    ])
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', CONFIG['PORT'])
-    await site.start()
-    logger.info(f"✅ HTTP server started on port {CONFIG['PORT']}")
-
-# Run the bot and HTTP server
-async def main():
-    """Main function"""
-    logger.info("🚀 Starting Enhanced Content Fetcher Bot...")
-    bot_started = False
-    userbot_started = False
-    
-    try:
-        # Start HTTP server for Render
-        await start_http_server()
-        
-        # Register raw update handler
-        userbot.on_raw_update()(handle_raw_update)
-        
-        # Start both clients
-        await bot.start()
-        bot_started = True
-        await userbot.start()
-        userbot_started = True
-        
-        bot_me = await bot.get_me()
-        userbot_me = await userbot.get_me()
-        
-        logger.info(f"✅ Bot started: @{bot_me.username}")
-        logger.info(f"✅ Userbot connected: {userbot_me.first_name}")
-        logger.info(f"🔐 Owner ID: {CONFIG['OWNER_ID']}")
-        logger.info(f"👥 Authorized users: {len(CONFIG['AUTHORIZED_USERS'])}")
-        logger.info("🎯 Bot is ready for requests!")
-        
-        # Keep the bot running
-        await idle()
-        
-    except Exception as e:
-        logger.error(f"❌ Startup error: {e}", exc_info=True)
-        logger.error(traceback.format_exc())
-    finally:
-        logger.info("🔄 Shutting down...")
-        try:
-            if bot_started:
-                await bot.stop()
-            if userbot_started:
-                await userbot.stop()
         except Exception as e:
-            logger.error(f"Shutdown error: {e}", exc_info=True)
+            logger.error(f"Failed to start cloud userbot: {e}")
+            return False
+    
+    async def run(self):
+        """Run the userbot with cloud keep-alive"""
+        if await self.start():
+            logger.info("Cloud userbot is running...")
+            
+            # Keep-alive mechanism for cloud deployment
+            async def keep_alive():
+                while True:
+                    try:
+                        await asyncio.sleep(300)  # 5 minutes
+                        await self.client.get_me()  # Simple API call to stay active
+                        logger.info("Keep-alive ping successful")
+                    except Exception as e:
+                        logger.error(f"Keep-alive failed: {e}")
+            
+            # Run keep-alive in background
+            asyncio.create_task(keep_alive())
+            
+            try:
+                await self.client.run_until_disconnected()
+            except KeyboardInterrupt:
+                logger.info("Cloud userbot stopped")
+            finally:
+                await self.client.disconnect()
+        else:
+            logger.error("Failed to start cloud userbot")
+
+# Main entry point for cloud deployment
+async def main():
+    """Main function optimized for cloud deployment"""
+    logger.info("Initializing cloud userbot...")
+    
+    try:
+        userbot = TelegramUserbot()
+        await userbot.run()
+    except ValueError as e:
+        logger.error(f"Configuration error: {e}")
+        logger.error("Please set the required environment variables in Render dashboard")
+    except Exception as e:
+        logger.error(f"Cloud userbot crashed: {e}")
+        # In cloud environment, we want to restart on crash
+        await asyncio.sleep(10)  # Wait before restart
+        await main()  # Restart
 
 if __name__ == "__main__":
+    # Run the cloud userbot
     asyncio.run(main())
+
