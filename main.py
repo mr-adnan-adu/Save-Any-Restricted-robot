@@ -1,11 +1,14 @@
-# main.py - Updated for Render deployment
+# main.py - Fixed version for Render deployment
 import logging
 import re
 import asyncio
 import sqlite3
 import os
+import json
 from typing import List, Optional, Tuple, Union
 from datetime import datetime, timedelta
+from aiohttp import web, ClientSession
+import threading
 
 from telethon import TelegramClient, events
 from telethon.errors import (
@@ -21,7 +24,6 @@ logging.basicConfig(
     level=logging.INFO,
     handlers=[
         logging.StreamHandler(),  # Console output for Render logs
-        logging.FileHandler('userbot.log') if os.path.exists('/tmp') else logging.NullHandler()
     ]
 )
 logger = logging.getLogger(__name__)
@@ -50,6 +52,7 @@ class TelegramUserbot:
         self.downloads_path = "/tmp/downloads" if os.path.exists('/tmp') else "downloads"
         self.rate_limit_delay = 1
         self.last_operation_time = datetime.now()
+        self.start_time = datetime.now()
         
         # Create downloads directory
         os.makedirs(self.downloads_path, exist_ok=True)
@@ -107,16 +110,14 @@ class TelegramUserbot:
 • `https://t.me/c/123456789/100`
 • `https://t.me/username/100`
 • `t.me/c/123456789/100-200` (range)
-• `123456789/100` (short format)
+• `-100123456789/100` (chat ID format)
 
 **Cloud Features:**
 • `.session` - Get current session string
-• `.logs` - Show recent logs
 • `.restart` - Restart bot (admin only)
 
 **Settings:**
 • `.delay <seconds>` - Set delay between operations
-• `.target <chat_id>` - Set default target chat
 
 **Deploy Status:**
 🌐 Deployed on Render
@@ -145,27 +146,18 @@ class TelegramUserbot:
         async def session_handler(event):
             # Only allow in private chat for security
             if event.is_private:
-                session_string = self.client.session.save()
-                await event.reply(
-                    f"🔐 **Session String:**\n"
-                    f"```\n{session_string}\n```\n\n"
-                    f"⚠️ **Keep this secure!** Save it as SESSION_STRING environment variable.",
-                    parse_mode='markdown'
-                )
+                try:
+                    session_string = self.client.session.save()
+                    await event.reply(
+                        f"🔐 **Session String:**\n"
+                        f"```\n{session_string}\n```\n\n"
+                        f"⚠️ **Keep this secure!** Save it as SESSION_STRING environment variable.",
+                        parse_mode='markdown'
+                    )
+                except Exception as e:
+                    await event.reply(f"❌ Error getting session: {str(e)}")
             else:
                 await event.reply("❌ Session string only available in private chat!")
-        
-        @self.client.on(events.NewMessage(pattern=r'^\.logs$'))
-        async def logs_handler(event):
-            try:
-                if os.path.exists('userbot.log'):
-                    with open('userbot.log', 'r') as f:
-                        logs = f.read()[-2000:]  # Last 2000 characters
-                    await event.reply(f"📋 **Recent Logs:**\n```\n{logs}\n```", parse_mode='markdown')
-                else:
-                    await event.reply("📋 No log file found")
-            except Exception as e:
-                await event.reply(f"❌ Error reading logs: {str(e)}")
         
         @self.client.on(events.NewMessage(pattern=r'^\.stats$'))
         async def stats_handler(event):
@@ -186,15 +178,6 @@ class TelegramUserbot:
             links = event.pattern_match.group(1)
             await self._process_links(event, links, action='download')
         
-        @self.client.on(events.NewMessage(pattern=r'^\.range (-?\d+) (\d+) (\d+)'))
-        async def range_handler(event):
-            chat_id = int(event.pattern_match.group(1))
-            start_id = int(event.pattern_match.group(2))
-            end_id = int(event.pattern_match.group(3))
-            
-            range_link = f"{chat_id}/{start_id}-{end_id}"
-            await self._process_links(event, range_link, action='forward')
-        
         @self.client.on(events.NewMessage(pattern=r'^\.delay (\d+)'))
         async def delay_handler(event):
             delay = int(event.pattern_match.group(1))
@@ -204,13 +187,8 @@ class TelegramUserbot:
     
     def _get_uptime(self) -> str:
         """Calculate uptime since start"""
-        try:
-            with open('/proc/uptime', 'r') as f:
-                uptime_seconds = float(f.readline().split()[0])
-                uptime = timedelta(seconds=uptime_seconds)
-                return str(uptime).split('.')[0]
-        except:
-            return "Unknown"
+        uptime = datetime.now() - self.start_time
+        return str(uptime).split('.')[0]
     
     async def _health_check(self, event):
         """Comprehensive health check"""
@@ -231,8 +209,11 @@ class TelegramUserbot:
         
         # Storage check
         try:
-            free_space = os.statvfs(self.downloads_path).f_bavail * os.statvfs(self.downloads_path).f_frsize
-            health_info['storage'] = f'✅ {free_space // (1024**2)} MB free'
+            if os.path.exists(self.downloads_path):
+                files = len(os.listdir(self.downloads_path))
+                health_info['storage'] = f'✅ {files} files'
+            else:
+                health_info['storage'] = '⚠️ Directory not found'
         except:
             health_info['storage'] = '⚠️ Unable to check'
         
@@ -284,14 +265,15 @@ class TelegramUserbot:
         
         self.last_operation_time = datetime.now()
     
-    def _parse_telegram_links(self, text: str) -> List[Tuple[int, List[int]]]:
-        """Parse various Telegram link formats"""
+    def _parse_telegram_links(self, text: str) -> List[Tuple[Union[int, str], List[int]]]:
+        """Parse various Telegram link formats with improved validation"""
         results = []
         
         # Pattern 1: https://t.me/c/chat_id/msg_id or range
         pattern1 = r'(?:https?://)?t\.me/c/(-?\d+)/(\d+)(?:-(\d+))?'
         for match in re.finditer(pattern1, text):
             chat_id = int(match.group(1))
+            # Convert to proper chat ID format
             if chat_id > 0:
                 chat_id = int(f"-100{chat_id}")
             start_msg = int(match.group(2))
@@ -303,13 +285,16 @@ class TelegramUserbot:
         pattern2 = r'(?:https?://)?t\.me/([a-zA-Z0-9_]+)/(\d+)(?:-(\d+))?'
         for match in re.finditer(pattern2, text):
             username = match.group(1)
+            # Skip if username is just 'c' (common error)
+            if username.lower() == 'c':
+                continue
             start_msg = int(match.group(2))
             end_msg = int(match.group(3)) if match.group(3) else start_msg
             msg_ids = list(range(start_msg, min(end_msg + 1, start_msg + 50)))
             results.append((username, msg_ids))
         
-        # Pattern 3: Short format
-        pattern3 = r'(-?\d+)/(\d+)(?:-(\d+))?'
+        # Pattern 3: Chat ID format (-100xxxxxxxxx/msg_id)
+        pattern3 = r'(-100\d+)/(\d+)(?:-(\d+))?'
         for match in re.finditer(pattern3, text):
             chat_id = int(match.group(1))
             start_msg = int(match.group(2))
@@ -320,23 +305,29 @@ class TelegramUserbot:
         return results
     
     async def _resolve_chat_id(self, chat_identifier: Union[str, int]) -> int:
-        """Resolve username or chat ID to actual chat ID"""
+        """Resolve username or chat ID to actual chat ID with better error handling"""
         try:
             if isinstance(chat_identifier, str):
+                # Skip obviously invalid identifiers
+                if chat_identifier.lower() in ['c', '', ' ']:
+                    raise ValueError(f"Invalid chat identifier: '{chat_identifier}'")
                 entity = await self.client.get_entity(chat_identifier)
                 return entity.id
             return chat_identifier
         except Exception as e:
             logger.error(f"Failed to resolve chat {chat_identifier}: {e}")
-            raise
+            raise ValueError(f"Cannot find chat: {chat_identifier}")
     
     async def _process_links(self, event, links_text: str, action: str = 'forward'):
-        """Process links with cloud optimizations"""
+        """Process links with cloud optimizations and better error handling"""
         try:
             parsed_links = self._parse_telegram_links(links_text)
             
             if not parsed_links:
-                await event.reply("❌ No valid links found!")
+                await event.reply("❌ No valid links found! Use format like:\n"
+                                "• `https://t.me/c/123456789/100`\n"
+                                "• `https://t.me/username/100`\n"
+                                "• `-100123456789/100`")
                 return
             
             status_msg = await event.reply(f"🔄 Processing {len(parsed_links)} link(s) on cloud...")
@@ -383,6 +374,7 @@ class TelegramUserbot:
                 
                 except Exception as e:
                     logger.error(f"Failed to process chat {chat_identifier}: {e}")
+                    await event.reply(f"❌ Error with chat {chat_identifier}: {str(e)}")
                     error_count += len(msg_ids)
             
             result_text = f"✅ **Cloud Processing Complete**\n" \
@@ -485,7 +477,6 @@ class TelegramUserbot:
 
 ⚙️ **Current Settings:**
 • Rate Limit: {self.rate_limit_delay}s
-• Default Target: {await self._get_setting('default_target_chat', 'Not set')}
 
 🌐 **Cloud Environment:**
 • Platform: Render
@@ -511,15 +502,18 @@ class TelegramUserbot:
             logger.info(f"Cloud userbot started as {me.username or me.first_name}")
             
             # Send startup notification
-            await self.client.send_message('me', 
-                "🌐 **Cloud Userbot Started Successfully!**\n\n"
-                f"📍 Deployed on: Render\n"
-                f"⚡ Status: Online\n"
-                f"🔧 Rate Limit: {self.rate_limit_delay}s\n"
-                f"📅 Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-                "Type `.help` for available commands.\n"
-                "Type `.health` to check system status."
-            )
+            try:
+                await self.client.send_message('me', 
+                    "🌐 **Cloud Userbot Started Successfully!**\n\n"
+                    f"📍 Deployed on: Render\n"
+                    f"⚡ Status: Online\n"
+                    f"🔧 Rate Limit: {self.rate_limit_delay}s\n"
+                    f"📅 Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                    "Type `.help` for available commands.\n"
+                    "Type `.health` to check system status."
+                )
+            except:
+                pass  # Don't fail if we can't send startup message
             
             return True
             
@@ -557,14 +551,64 @@ class TelegramUserbot:
         else:
             logger.error("Failed to start cloud userbot")
 
+# HTTP Server for Render port requirement
+async def create_http_server():
+    """Create a simple HTTP server to satisfy Render's port requirement"""
+    
+    async def health_check(request):
+        """Health check endpoint"""
+        return web.json_response({
+            "status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "service": "telegram-userbot"
+        })
+    
+    async def status(request):
+        """Status endpoint"""
+        return web.json_response({
+            "status": "running",
+            "uptime": str(datetime.now() - start_time).split('.')[0],
+            "service": "telegram-userbot",
+            "version": "1.0.0"
+        })
+    
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    app.router.add_get('/health', health_check)
+    app.router.add_get('/status', status)
+    
+    # Get port from environment (Render provides this)
+    port = int(os.getenv('PORT', 8080))
+    
+    return app, port
+
+# Global start time for uptime calculation
+start_time = datetime.now()
+
 # Main entry point for cloud deployment
 async def main():
     """Main function optimized for cloud deployment"""
     logger.info("Initializing cloud userbot...")
     
     try:
+        # Create HTTP server for Render
+        app, port = await create_http_server()
+        
+        # Start HTTP server in background
+        async def start_http_server():
+            runner = web.AppRunner(app)
+            await runner.setup()
+            site = web.TCPSite(runner, '0.0.0.0', port)
+            await site.start()
+            logger.info(f"HTTP server started on port {port}")
+        
+        # Start HTTP server
+        await start_http_server()
+        
+        # Start userbot
         userbot = TelegramUserbot()
         await userbot.run()
+        
     except ValueError as e:
         logger.error(f"Configuration error: {e}")
         logger.error("Please set the required environment variables in Render dashboard")
@@ -577,4 +621,3 @@ async def main():
 if __name__ == "__main__":
     # Run the cloud userbot
     asyncio.run(main())
-
