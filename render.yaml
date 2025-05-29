@@ -2,18 +2,31 @@ services:
   - type: web
     name: telegram-userbot
     env: python
-    buildCommand: pip install -r requirements.txt
+    region: oregon
+    plan: starter
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
     startCommand: python main.py
+    healthCheckPath: /health
     envVars:
       - key: API_ID
+        description: "Telegram API ID from my.telegram.org"
         sync: false
       - key: API_HASH
+        description: "Telegram API Hash from my.telegram.org"
         sync: false
       - key: PHONE_NUMBER
+        description: "Phone number with country code (+1234567890)"
         sync: false
       - key: SESSION_STRING
+        description: "Telegram session string (optional for first run)"
         sync: false
+      - key: PYTHON_VERSION
+        value: "3.11.0"
+      - key: PORT
+        generateValue: true
     disk:
       name: userbot-storage
-      mountPath: /tmp
+      mountPath: /opt/render/project/storage
       sizeGB: 1
